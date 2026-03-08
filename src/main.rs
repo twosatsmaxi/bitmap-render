@@ -4,7 +4,7 @@ use axum::{
     Router,
     body::Body,
     extract::{Path, State},
-    http::{HeaderValue, Response, StatusCode, header},
+    http::{HeaderValue, Method, Response, StatusCode, header},
     response::IntoResponse,
     routing::get,
 };
@@ -12,6 +12,7 @@ use lru::LruCache;
 use reqwest::Client;
 use serde::Deserialize;
 use tokio::sync::Mutex;
+use tower_http::cors::{Any, CorsLayer};
 use tracing::{error, info};
 
 const DEFAULT_MEMPOOL_BASE_URL: &str = "https://mempool.space/api";
@@ -35,9 +36,14 @@ struct Block {
 }
 
 #[derive(Debug, Deserialize)]
+struct TxOut {
+    value: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
 struct Tx {
     txid: String,
-    vsize: u64,
+    vout: Option<Vec<TxOut>>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -91,10 +97,14 @@ async fn main() {
         ))),
     };
 
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods([Method::GET]);
     let app = Router::new()
         .route("/healthz", get(healthz))
         .route("/api/block/{height}", get(get_block))
         .route("/api/block/{height}/meta", get(get_block_meta))
+        .layer(cors)
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
@@ -232,17 +242,32 @@ async fn fetch_json<T: for<'de> Deserialize<'de>>(
 }
 
 fn encode_transactions(transactions: &[Tx]) -> Result<Vec<u8>, AppError> {
-    let mut payload = Vec::with_capacity(transactions.len() * 34);
+    let mut payload = Vec::with_capacity(transactions.len() * 33);
     for tx in transactions {
         let txid = hex::decode(&tx.txid).map_err(|_| AppError::invalid_txid(tx.txid.clone()))?;
         if txid.len() != 32 {
             return Err(AppError::invalid_txid(tx.txid.clone()));
         }
-        let vsize = u16::try_from(tx.vsize).map_err(|_| AppError::invalid_vsize(tx.vsize))?;
+        let sum_vout: u64 = tx
+            .vout
+            .iter()
+            .flatten()
+            .filter_map(|o| o.value)
+            .sum();
+        let display_size = log_tx_size(sum_vout);
         payload.extend_from_slice(&txid);
-        payload.extend_from_slice(&vsize.to_le_bytes());
+        payload.push(display_size);
     }
     Ok(payload)
+}
+
+/// Matches bitfeed's logTxSize: max(1, ceil(log10(satoshis)) - 5)
+fn log_tx_size(satoshis: u64) -> u8 {
+    if satoshis == 0 {
+        return 1;
+    }
+    let log = (satoshis as f64).log10().ceil() as i64;
+    (log - 5).max(1) as u8
 }
 
 fn brotli_compress(input: &[u8]) -> Result<Vec<u8>, std::io::Error> {
@@ -282,12 +307,6 @@ impl AppError {
         }
     }
 
-    fn invalid_vsize(vsize: u64) -> Self {
-        Self {
-            status: StatusCode::BAD_GATEWAY,
-            message: format!("upstream returned vsize outside u16 range: {vsize}"),
-        }
-    }
 }
 
 impl IntoResponse for AppError {
@@ -301,41 +320,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn encodes_transactions_as_txid_plus_little_endian_vsize() {
+    fn encodes_transactions_as_txid_plus_display_size() {
         let transactions = vec![
             Tx {
                 txid: "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
                     .to_string(),
-                vsize: 258,
+                vout: Some(vec![TxOut { value: Some(1_000_000_000) }]), // 10 BTC → size 4
             },
             Tx {
                 txid: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
                     .to_string(),
-                vsize: 42,
+                vout: Some(vec![TxOut { value: Some(0) }]), // 0 sats → size 1
             },
         ];
 
         let encoded = encode_transactions(&transactions).expect("payload should encode");
 
-        assert_eq!(encoded.len(), 68);
+        assert_eq!(encoded.len(), 66); // 2 * 33
         assert_eq!(&encoded[..32], &hex::decode(&transactions[0].txid).unwrap());
-        assert_eq!(&encoded[32..34], &[2, 1]);
-        assert_eq!(
-            &encoded[34..66],
-            &hex::decode(&transactions[1].txid).unwrap()
-        );
-        assert_eq!(&encoded[66..68], &[42, 0]);
+        // log_tx_size(1_000_000_000): ceil(log10(1e9))=9, 9-5=4
+        assert_eq!(encoded[32], 4);
+        assert_eq!(&encoded[33..65], &hex::decode(&transactions[1].txid).unwrap());
+        assert_eq!(encoded[65], 1); // 0 sats → size 1
     }
 
     #[test]
-    fn rejects_oversized_vsize() {
-        let transactions = vec![Tx {
-            txid: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_string(),
-            vsize: u16::MAX as u64 + 1,
-        }];
-
-        let error = encode_transactions(&transactions).expect_err("payload should fail");
-        assert_eq!(error.status, StatusCode::BAD_GATEWAY);
-        assert!(error.message.contains("outside u16 range"));
+    fn log_tx_size_matches_bitfeed() {
+        assert_eq!(log_tx_size(0), 1);                   // zero → 1
+        assert_eq!(log_tx_size(100_000), 1);             // 0.001 BTC → 1
+        assert_eq!(log_tx_size(10_000_000), 2);          // 0.1 BTC → 2
+        assert_eq!(log_tx_size(100_000_000), 3);         // 1 BTC → 3
+        assert_eq!(log_tx_size(1_000_000_000), 4);       // 10 BTC → 4
+        assert_eq!(log_tx_size(2_500_000_000), 5);       // 25 BTC coinbase → 5
     }
 }

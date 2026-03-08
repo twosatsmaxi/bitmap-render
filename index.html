@@ -42,6 +42,7 @@
   #tooltip .tid { color:#f7a23b; word-break:break-all; margin-bottom:2px; }
   #tooltip .row { display:flex; justify-content:space-between; gap:14px; }
 
+  /* ── Search bar */
   #searchbar {
     position:fixed; top:0; left:0; right:0; z-index:50;
     display:flex; align-items:center; justify-content:center;
@@ -115,6 +116,7 @@
 <div id="tooltip"></div>
 
 <script>
+// ── HCL → RGB (D3-compatible, exact match to bitfeed's d3-color)
 function hclToRgb(hDeg, c, l) {
   const h = hDeg * Math.PI / 180;
   const a = Math.cos(h) * c, b = Math.sin(h) * c;
@@ -132,6 +134,8 @@ function hclToRgb(hDeg, c, l) {
 }
 function hclCss(h, c, l) { const [r,g,b] = hclToRgb(h,c,l); return `rgb(${r},${g},${b})`; }
 
+// ── Colours — exact from bitfeed/src/utils/color.js
+// h and l are in 0-1 space; render with h*360, C=78.225, l*150
 const C = 78.225;
 const ORANGE = { h:0.181, l:0.472 };
 const TEAL   = { h:0.475, l:0.55  };
@@ -142,21 +146,28 @@ function mixColor(start, end, min, max, value) {
   return { h: start.h + dx*(end.h - start.h), l: start.l + dx*(end.l - start.l) };
 }
 
+// feerate==null OR coinbase → orange; else teal→purple via log2(feerate)
 function txColor(feerate, isCoinbase) {
   if (isCoinbase || feerate == null) return hclCss(ORANGE.h*360, C, ORANGE.l*150);
   const mixed = mixColor(TEAL, PURPLE, 1, Math.log2(128), Math.log2(Math.max(1, feerate)));
   return hclCss(mixed.h*360, C, mixed.l*150);
 }
 
+// ── Size functions — exact from bitfeed/src/utils/misc.js
 function logTxSize(value) {
   return Math.max(1, Math.ceil(Math.log10(value)) - 5);
 }
+function byteTxSize(vbytes) {
+  if (!vbytes) vbytes = 1;
+  return Math.max(1, Math.ceil(Math.sqrt(vbytes / 256)));
+}
 
+// ── Full Mondrian layout — ported from bitfeed/src/models/TxMondrianPoolScene.js
 class MondrianLayout {
   constructor(width) {
     this.width = width;
     this.rowOffset = 0;
-    this.rows = [];
+    this.rows = [];   // rows[y - rowOffset]
     this.txMap = [];
   }
 
@@ -191,38 +202,43 @@ class MondrianLayout {
 
   _removeSlot(slot) {
     const row = this._getRow(slot.y);
-    if (row) { delete row.map[slot.x]; const i = row.slots.indexOf(slot); if (i >= 0) row.slots.splice(i, 1); }
+    if (row) { delete row.map[slot.x]; const i = row.slots.indexOf(slot); if (i>=0) row.slots.splice(i,1); }
   }
 
   _fillSlot(slot, sw) {
     const sq = { x: slot.x, y: slot.y, r: sw };
     this._removeSlot(slot);
 
+    // Fix collisions in rows slot.y … slot.y+sw-1  (rows filled by the square)
     for (let ri = slot.y; ri < slot.y + sw; ri++) {
       let row = this._getRow(ri);
       if (row) {
         const collisions = [];
         let maxExcess = 0;
         for (const ts of [...row.slots]) {
-          if (!((ts.x + ts.r) <= sq.x || ts.x >= (sq.x + sw))) {
+          if (!( (ts.x + ts.r) <= sq.x || ts.x >= (sq.x + sw) )) {
             collisions.push(ts);
             maxExcess = Math.max(maxExcess, Math.max(0, (ts.x + ts.r) - (slot.x + slot.r)));
           }
         }
+        // RHS slot after the square
         if (sq.x + sw < this.width && !row.map[sq.x + sw]) {
           this._addSlot({ x: sq.x + sw, y: ri, r: slot.r - sw + maxExcess });
         }
+        // Shrink / remove collisions
         for (const col of collisions) {
           col.r = slot.x - col.x;
-          if (col.r <= 0) this._removeSlot(col);
+          if (col.r > 0) ; else this._removeSlot(col);
         }
       } else {
+        // Row doesn't exist yet — create it
         this._addRow();
         if (slot.x > 0) this._addSlot({ x: 0, y: ri, r: slot.x });
         if (sq.x + sw < this.width) this._addSlot({ x: sq.x + sw, y: ri, r: this.width - (sq.x + sw) });
       }
     }
 
+    // Fix collisions in rows BELOW the square (rows that had slots extending up into the square)
     for (let ri = Math.max(0, slot.y - sw); ri < slot.y; ri++) {
       const row = this._getRow(ri);
       if (!row) continue;
@@ -231,6 +247,7 @@ class MondrianLayout {
           const oldW = ts.r;
           ts.r = slot.y - ts.y;
           if (ts.r <= 0) { this._removeSlot(ts); continue; }
+          // Tile remaining free space with slots
           let rem = { x: ts.x + ts.r, y: ts.y, w: oldW - ts.r, h: ts.r };
           while (rem.w > 0 && rem.h > 0) {
             if (rem.w <= rem.h) {
@@ -249,6 +266,7 @@ class MondrianLayout {
   }
 
   place(tx, size) {
+    // Search all existing rows for a slot large enough
     for (const row of this.rows) {
       for (const slot of [...row.slots]) {
         if (slot.r >= size) {
@@ -258,10 +276,10 @@ class MondrianLayout {
         }
       }
     }
+    // No fit → new row
     const newRow = this._addRow();
     const slot = { x: 0, y: newRow.y, r: this.width };
-    newRow.slots.push(slot);
-    newRow.map[0] = slot;
+    newRow.slots.push(slot); newRow.map[0] = slot;
     tx.square = this._fillSlot(slot, size);
     this._recordTx(tx);
     return tx.square;
@@ -282,8 +300,24 @@ class MondrianLayout {
     const oy = y - this.rowOffset;
     return (this.txMap[oy] && this.txMap[oy][x]) || null;
   }
+
+  get totalRows() {
+    if (!this.rows.length) return 0;
+    const last = this.rows[this.rows.length - 1];
+    return last.y + last.max + 1;
+  }
+
+  get usedHeight() {
+    // max y coordinate used
+    let max = 0;
+    for (const tx of allTxs) {
+      if (tx.square) max = Math.max(max, tx.square.y + tx.square.r);
+    }
+    return max;
+  }
 }
 
+// ── State
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
 const loadingEl = document.getElementById('loading');
@@ -293,16 +327,19 @@ let blockGridWidth = 1, gridSize = 1, unitPadding = 0, canvasSize = 0;
 let offsetX = 0, offsetY = 0;
 let hoveredTx = null;
 let btcPrice = 67288;
-let allTxs = [];
+let allTxs = []; // reference for usedHeight
 
-fetch('https://mempool.space/api/v1/prices').then(r => r.json()).then(d => { if (d.USD) btcPrice = d.USD; }).catch(() => {});
+// ── Fetch live BTC price
+fetch('https://mempool.space/api/v1/prices').then(r=>r.json()).then(d=>{ if(d.USD) btcPrice=d.USD; }).catch(()=>{});
 
+// ── Panel
 function setPanel(block, txns) {
   document.getElementById('p-height').textContent = block.height.toLocaleString();
   const d = new Date(block.timestamp * 1000);
-  const pad = n => String(n).padStart(2, '0');
+  const pad = n => String(n).padStart(2,'0');
+  // Local time — matches bitfeed's display
   document.getElementById('p-date').textContent =
-    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 
   let totalSats = 0, totalFees = 0, totalVsize = 0;
   txns.forEach((tx, i) => {
@@ -318,51 +355,64 @@ function setPanel(block, txns) {
   document.getElementById('p-value').textContent = btc.toFixed(6);
   const usd = btc * btcPrice;
   document.getElementById('p-usd').textContent = usd >= 1e6
-    ? `≈ $ ${(usd / 1e6).toFixed(2)}M` : `≈ $ ${usd.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
-  document.getElementById('p-bytes').textContent = `${(block.size || 0).toLocaleString()} bytes`;
-  document.getElementById('p-txcount').textContent = `${(block.tx_count || txns.length).toLocaleString()} transactions`;
+    ? `≈ $ ${(usd/1e6).toFixed(2)}M` : `≈ $ ${usd.toLocaleString(undefined,{maximumFractionDigits:0})}`;
+  document.getElementById('p-bytes').textContent = `${(block.size||0).toLocaleString()} bytes`;
+  document.getElementById('p-txcount').textContent =
+    `${(block.tx_count||txns.length).toLocaleString()} transactions`;
   const avg = totalVsize > 0 ? totalFees / totalVsize : 0;
   document.getElementById('p-feerate').textContent = avg > 0 ? avg.toFixed(2) : '—';
 }
 
+// ── tx value in satoshis (sum of outputs)
 function txValue(tx) {
   if (!tx.vout || !tx.vout.length) return 1;
   return tx.vout.reduce((s, o) => s + (o.value || 0), 0);
 }
 
+// ── Layout — matches TxBlockScene exactly
 function layoutBlock(txns) {
   allTxs = txns;
+
+  // Compute size for each tx
   txns.forEach(tx => {
     tx._size = logTxSize(Math.max(1, txValue(tx)));
   });
+
+  // blockWidth = ceil(sqrt(sum of size^2))
   let blockWeight = 0;
   txns.forEach(tx => blockWeight += tx._size * tx._size);
   blockGridWidth = Math.ceil(Math.sqrt(blockWeight));
+
   layout = new MondrianLayout(blockGridWidth);
+  // Block order (no sort) — same as bitfeed
   txns.forEach(tx => layout.place(tx, tx._size));
 }
 
+// ── Find max y used
 function maxUsedY() {
   let max = 0;
   allTxs.forEach(tx => { if (tx.square) max = Math.max(max, tx.square.y + tx.square.r); });
   return max;
 }
 
+// ── Canvas size
 function getCanvasSize() {
   return Math.min(window.innerWidth - 230, window.innerHeight - 48, 680);
 }
 
+// ── Draw
 function computeGrid() {
   canvasSize = getCanvasSize();
   const usedH = maxUsedY();
   const draw = Math.max(blockGridWidth, usedH);
   gridSize = canvasSize / draw;
-  unitPadding = gridSize / 4;
+  unitPadding = gridSize / 4; // exact match to bitfeed: unitPadding = gridSize / 4
   offsetY = (canvasSize - usedH * gridSize) / 2;
   offsetX = 0;
 }
 
 function drawAll(animProgress) {
+  // animProgress: map from tx index → 0..1 alpha (undefined = fully drawn)
   computeGrid();
   canvas.width = canvasSize;
   canvas.height = canvasSize;
@@ -372,16 +422,24 @@ function drawAll(animProgress) {
   allTxs.forEach((tx, i) => {
     const sq = tx.square;
     if (!sq) return;
+
     const px = sq.x * gridSize + unitPadding;
     const py = sq.y * gridSize + offsetY + unitPadding;
     const pw = sq.r * gridSize - unitPadding * 2;
+
     if (pw <= 0) return;
+
+    // bitfeed: feerate==null → orange. mempool.space API doesn't return tx.feerate
+    // for historical blocks, so all tiles render orange (matching original)
     const feerate = tx.feerate ?? null;
-    const color = txColor(feerate, i === 0);
+    const isCoinbase = (i === 0);
+    const color = txColor(feerate, isCoinbase);
+
     const alpha = animProgress ? (animProgress[i] ?? 1) : 1;
     ctx.globalAlpha = alpha;
     ctx.fillStyle = color;
-    ctx.fillRect(px, py, pw, pw);
+    ctx.fillRect(px, py, pw, pw); // always square
+
     if (hoveredTx === tx) {
       ctx.globalAlpha = 0.28;
       ctx.fillStyle = '#ffffff';
@@ -391,37 +449,48 @@ function drawAll(animProgress) {
   });
 }
 
+// ── Animation (tiles fade in, pre-computed per-load)
 let animStartTime = null;
 let animActive = false;
-let animData = [];
+let animData = []; // [{delay, dur}] pre-computed once per block load
 
 function buildAnimData(count) {
   animData = Array.from({ length: count }, (_, i) => ({
     delay: (i / count) * 500 + Math.random() * 350,
-    dur: 850 + Math.random() * 500,
+    dur:   850 + Math.random() * 500,
   }));
 }
 
 function animate(timestamp) {
   if (!animStartTime) animStartTime = timestamp;
   const elapsed = timestamp - animStartTime;
+
   const progress = {};
   allTxs.forEach((_, i) => {
     const { delay, dur } = animData[i] || { delay: 0, dur: 1000 };
     const t = Math.max(0, elapsed - delay);
-    const p = Math.min(1, t / dur);
-    progress[i] = 1 - Math.pow(1 - p, 3);
+    let p = Math.min(1, t / dur);
+    progress[i] = 1 - Math.pow(1 - p, 3); // ease-out cubic
   });
+
   drawAll(progress);
+
   const maxEnd = Math.max(...animData.map(d => d.delay + d.dur));
-  if (elapsed < maxEnd) requestAnimationFrame(animate);
-  else { animActive = false; drawAll(); }
+  if (elapsed < maxEnd) {
+    requestAnimationFrame(animate);
+  } else {
+    animActive = false;
+    drawAll();
+  }
 }
 
+// ── Hover / tooltip
 function txAt(mx, my) {
   const gx = Math.floor((mx - offsetX) / gridSize);
   const gy = Math.floor((my - offsetY) / gridSize);
-  if (layout && gx >= 0 && gy >= 0 && gx < blockGridWidth) return layout.getTxAt(gx, gy);
+  if (layout && gx >= 0 && gy >= 0 && gx < blockGridWidth) {
+    return layout.getTxAt(gx, gy);
+  }
   return null;
 }
 
@@ -435,9 +504,9 @@ canvas.addEventListener('mousemove', e => {
     const vs = found.weight ? Math.ceil(found.weight / 4) : (found.size || 0);
     const fr = (found.fee && vs) ? (found.fee / vs).toFixed(2) : '—';
     const val = (txValue(found) / 1e8).toFixed(8);
-    tooltip.style.cssText = `display:block;left:${e.clientX + 14}px;top:${e.clientY - 8}px`;
+    tooltip.style.cssText = `display:block;left:${e.clientX+14}px;top:${e.clientY-8}px`;
     tooltip.innerHTML = `
-      <div class="tid">${(found.txid || '').slice(0,20)}…${(found.txid || '').slice(-8)}</div>
+      <div class="tid">${(found.txid||'').slice(0,20)}…${(found.txid||'').slice(-8)}</div>
       <div class="row"><span>vsize</span><span>${vs} vbytes</span></div>
       <div class="row"><span>fee rate</span><span>${fr} sat/vbyte</span></div>
       <div class="row"><span>value</span><span>₿ ${val}</span></div>`;
@@ -445,60 +514,64 @@ canvas.addEventListener('mousemove', e => {
     tooltip.style.display = 'none';
   }
 });
-
 canvas.addEventListener('mouseleave', () => {
-  hoveredTx = null;
-  tooltip.style.display = 'none';
-  if (!animActive) drawAll();
+  hoveredTx = null; tooltip.style.display = 'none'; if (!animActive) drawAll();
 });
 
+// ── Fetch all tx pages for a block (mempool.space returns 25 per page)
 async function fetchAllTxs(hash, txCount) {
   const PAGE = 25;
   const pages = Math.ceil(txCount / PAGE);
+  // First page already fetched; fetch remaining in parallel batches of 10
   const offsets = Array.from({ length: pages }, (_, i) => i * PAGE);
   const BATCH = 10;
   let all = [];
   for (let i = 0; i < offsets.length; i += BATCH) {
     const batch = offsets.slice(i, i + BATCH);
     const results = await Promise.all(
-      batch.map(off => fetch(`https://mempool.space/api/block/${hash}/txs/${off}`).then(r => r.json()))
+      batch.map(off =>
+        fetch(`https://mempool.space/api/block/${hash}/txs/${off}`).then(r => r.json())
+      )
     );
     all = all.concat(...results);
+    // Update loading text with progress
     const pct = Math.round(((i + batch.length) / pages) * 100);
     loadingEl.textContent = `Loading… ${pct}%`;
   }
   return all;
 }
 
+// ── Load block
 async function loadBlock(height) {
   loadingEl.style.display = 'block';
   loadingEl.textContent = 'Loading…';
   canvas.style.display = 'none';
-  animStartTime = null;
-  hoveredTx = null;
+  animStartTime = null; hoveredTx = null;
   try {
     const hash = await fetch(`https://mempool.space/api/block-height/${height}`).then(r => r.text());
     const block = await fetch(`https://mempool.space/api/block/${hash}`).then(r => r.json());
     const txs = await fetchAllTxs(hash, block.tx_count);
-    blockData = block;
-    txList = txs;
+
+    blockData = block; txList = txs;
     setPanel(block, txs);
     layoutBlock(txs);
     buildAnimData(txs.length);
+
     loadingEl.style.display = 'none';
     canvas.style.display = 'block';
     computeGrid();
-    canvas.width = canvasSize;
-    canvas.height = canvasSize;
+    canvas.width = canvasSize; canvas.height = canvasSize;
+
     animActive = true;
     animStartTime = null;
     requestAnimationFrame(animate);
-  } catch (err) {
+  } catch(err) {
     loadingEl.textContent = `Error: ${err.message}`;
     console.error(err);
   }
 }
 
+// ── URL routing: /block/<height|hash>
 function parseRoute() {
   const m = location.pathname.match(/\/block\/(?:height\/)?([0-9a-fA-F]+)/);
   return m ? m[1] : null;
@@ -506,7 +579,9 @@ function parseRoute() {
 
 function navigate(heightOrHash) {
   const isHash = /^[0-9a-fA-F]{64}$/.test(heightOrHash);
-  const path = isHash ? `/block/${heightOrHash}` : `/block/height/${heightOrHash}`;
+  const path = isHash
+    ? `/block/${heightOrHash}`
+    : `/block/height/${heightOrHash}`;
   history.pushState({}, '', path);
   document.title = `Block ${heightOrHash} — Bitfeed Clone`;
 }
@@ -516,17 +591,20 @@ async function loadBlockByInput(raw) {
   if (!val) return;
   const errEl = document.getElementById('search-err');
   errEl.style.display = 'none';
+
   try {
     if (/^\d+$/.test(val)) {
+      // Height
       navigate(val);
       await loadBlock(parseInt(val, 10));
     } else if (/^[0-9a-fA-F]{64}$/.test(val)) {
+      // Hash — resolve to height first, then load
       navigate(val);
       await loadBlockByHash(val);
     } else {
       throw new Error('Enter a block height (number) or 64-char hex hash');
     }
-  } catch (e) {
+  } catch(e) {
     errEl.textContent = e.message;
     errEl.style.display = 'block';
     setTimeout(() => errEl.style.display = 'none', 4000);
@@ -537,14 +615,12 @@ async function loadBlockByHash(hash) {
   loadingEl.style.display = 'block';
   loadingEl.textContent = 'Loading…';
   canvas.style.display = 'none';
-  animStartTime = null;
-  hoveredTx = null;
+  animStartTime = null; hoveredTx = null;
   try {
     const block = await fetch(`https://mempool.space/api/block/${hash}`)
-      .then(r => { if (!r.ok) throw new Error('Block not found'); return r.json(); });
+      .then(r => { if(!r.ok) throw new Error(`Block not found`); return r.json(); });
     const txs = await fetchAllTxs(hash, block.tx_count);
-    blockData = block;
-    txList = txs;
+    blockData = block; txList = txs;
     document.title = `Block ${block.height.toLocaleString()} — Bitfeed Clone`;
     history.replaceState({}, '', `/block/height/${block.height}`);
     document.getElementById('search-input').value = '';
@@ -554,17 +630,16 @@ async function loadBlockByHash(hash) {
     loadingEl.style.display = 'none';
     canvas.style.display = 'block';
     computeGrid();
-    canvas.width = canvasSize;
-    canvas.height = canvasSize;
-    animActive = true;
-    animStartTime = null;
+    canvas.width = canvasSize; canvas.height = canvasSize;
+    animActive = true; animStartTime = null;
     requestAnimationFrame(animate);
-  } catch (e) {
+  } catch(e) {
     loadingEl.textContent = `Error: ${e.message}`;
     throw e;
   }
 }
 
+// ── Patch loadBlock to also update URL + title
 const _loadBlock = loadBlock;
 loadBlock = async function(height) {
   navigate(height);
@@ -573,11 +648,13 @@ loadBlock = async function(height) {
   await _loadBlock(height);
 };
 
+// ── Search form
 document.getElementById('search-form').addEventListener('submit', e => {
   e.preventDefault();
   loadBlockByInput(document.getElementById('search-input').value);
 });
 
+// ── Browser back/forward
 window.addEventListener('popstate', () => {
   const val = parseRoute();
   if (val) loadBlockByInput(val);
@@ -585,16 +662,18 @@ window.addEventListener('popstate', () => {
 
 window.addEventListener('resize', () => { if (layout && !animActive) drawAll(); });
 document.getElementById('close-btn').addEventListener('click', () => {
-  canvas.style.display = 'none';
-  loadingEl.style.display = 'block';
-  loadingEl.textContent = '';
+  canvas.style.display='none'; loadingEl.style.display='block'; loadingEl.textContent='';
 });
 document.getElementById('prev-btn').addEventListener('click', () => { if (blockData) loadBlock(blockData.height - 1); });
 document.getElementById('next-btn').addEventListener('click', () => { if (blockData) loadBlock(blockData.height + 1); });
 
+// ── Boot: read route or default
 const routeVal = parseRoute();
-if (routeVal) loadBlockByInput(routeVal);
-else loadBlock(261250);
+if (routeVal) {
+  loadBlockByInput(routeVal);
+} else {
+  loadBlock(261250);
+}
 </script>
 </body>
 </html>

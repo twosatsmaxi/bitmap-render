@@ -74,7 +74,10 @@
 <div id="tooltip"></div>
 
 <script>
-const API_BASE = '';
+const API_BASE = (() => {
+  const param = new URLSearchParams(location.search).get('api_base');
+  return param || 'http://localhost:3000';
+})();
 const GRID_COUNT = 4;
 const tooltip = document.getElementById('tooltip');
 const statusEl = document.getElementById('status');
@@ -101,10 +104,6 @@ function hclCss(h, c, l) { const [r,g,b] = hclToRgb(h,c,l); return `rgb(${r},${g
 const C = 78.225;
 const ORANGE = { h:0.181, l:0.472 };
 function txColor() { return hclCss(ORANGE.h*360, C, ORANGE.l*150); }
-function byteTxSize(vbytes) {
-  if (!vbytes) vbytes = 1;
-  return Math.max(1, Math.ceil(Math.sqrt(vbytes / 256)));
-}
 
 class MondrianLayout {
   constructor(width) {
@@ -112,15 +111,19 @@ class MondrianLayout {
     this.rowOffset = 0;
     this.rows = [];
     this.txMap = [];
+    this.txs = [];
   }
+
   _getRow(y) { return this.rows[y - this.rowOffset]; }
   _getSlot(x, y) { const r = this._getRow(y); return r ? r.map[x] : undefined; }
+
   _addRow() {
     const y = this.rows.length + this.rowOffset;
-    const row = { y, slots: [], map: {} };
+    const row = { y, slots: [], map: {}, max: 0 };
     this.rows.push(row);
     return row;
   }
+
   _addSlot(slot) {
     if (slot.r <= 0) return;
     const existing = this._getSlot(slot.x, slot.y);
@@ -139,20 +142,23 @@ class MondrianLayout {
     row.map[slot.x] = slot;
     return slot;
   }
+
   _removeSlot(slot) {
     const row = this._getRow(slot.y);
-    if (row) { delete row.map[slot.x]; const i = row.slots.indexOf(slot); if (i >= 0) row.slots.splice(i, 1); }
+    if (row) { delete row.map[slot.x]; const i = row.slots.indexOf(slot); if (i>=0) row.slots.splice(i,1); }
   }
+
   _fillSlot(slot, sw) {
     const sq = { x: slot.x, y: slot.y, r: sw };
     this._removeSlot(slot);
+
     for (let ri = slot.y; ri < slot.y + sw; ri++) {
       let row = this._getRow(ri);
       if (row) {
         const collisions = [];
         let maxExcess = 0;
         for (const ts of [...row.slots]) {
-          if (!((ts.x + ts.r) <= sq.x || ts.x >= (sq.x + sw))) {
+          if (!( (ts.x + ts.r) <= sq.x || ts.x >= (sq.x + sw) )) {
             collisions.push(ts);
             maxExcess = Math.max(maxExcess, Math.max(0, (ts.x + ts.r) - (slot.x + slot.r)));
           }
@@ -162,7 +168,7 @@ class MondrianLayout {
         }
         for (const col of collisions) {
           col.r = slot.x - col.x;
-          if (col.r <= 0) this._removeSlot(col);
+          if (col.r > 0) ; else this._removeSlot(col);
         }
       } else {
         this._addRow();
@@ -170,6 +176,7 @@ class MondrianLayout {
         if (sq.x + sw < this.width) this._addSlot({ x: sq.x + sw, y: ri, r: this.width - (sq.x + sw) });
       }
     }
+
     for (let ri = Math.max(0, slot.y - sw); ri < slot.y; ri++) {
       const row = this._getRow(ri);
       if (!row) continue;
@@ -191,8 +198,10 @@ class MondrianLayout {
         }
       }
     }
+
     return sq;
   }
+
   place(tx, size) {
     for (const row of this.rows) {
       for (const slot of [...row.slots]) {
@@ -205,42 +214,47 @@ class MondrianLayout {
     }
     const newRow = this._addRow();
     const slot = { x: 0, y: newRow.y, r: this.width };
-    newRow.slots.push(slot);
-    newRow.map[0] = slot;
+    newRow.slots.push(slot); newRow.map[0] = slot;
     tx.square = this._fillSlot(slot, size);
     this._recordTx(tx);
     return tx.square;
   }
+
   _recordTx(tx) {
     const sq = tx.square;
     for (let dx = 0; dx < sq.r; dx++) {
       for (let dy = 0; dy < sq.r; dy++) {
-        while (this.txMap.length <= sq.y + dy) this.txMap.push(new Array(this.width).fill(null));
-        this.txMap[sq.y + dy][sq.x + dx] = tx;
+        const oy = sq.y + dy - this.rowOffset;
+        while (this.txMap.length <= oy) this.txMap.push(new Array(this.width).fill(null));
+        this.txMap[oy][sq.x + dx] = tx;
       }
     }
   }
+
   getTxAt(x, y) {
-    return (this.txMap[y] && this.txMap[y][x]) || null;
+    const oy = y - this.rowOffset;
+    return (this.txMap[oy] && this.txMap[oy][x]) || null;
+  }
+
+  get usedHeight() {
+    let max = 0;
+    for (const tx of this.txs) {
+      if (tx.square) max = Math.max(max, tx.square.y + tx.square.r);
+    }
+    return max;
   }
 }
 
 function parseBinaryTxs(buffer) {
   const bytes = new Uint8Array(buffer);
-  if (bytes.length % 34 !== 0) throw new Error('Invalid binary block payload');
+  if (bytes.length % 33 !== 0) throw new Error('Invalid binary block payload');
   const txs = [];
-  for (let i = 0; i < bytes.length; i += 34) {
+  for (let i = 0; i < bytes.length; i += 33) {
     const txid = Array.from(bytes.slice(i, i + 32), b => b.toString(16).padStart(2, '0')).join('');
-    const vsize = bytes[i + 32] | (bytes[i + 33] << 8);
-    txs.push({ txid, vsize });
+    const size = bytes[i + 32] || 1;
+    txs.push({ txid, size });
   }
   return txs;
-}
-
-async function fetchBlockMeta(height) {
-  const response = await fetch(`${API_BASE}/api/block/${height}/meta`);
-  if (!response.ok) throw new Error(`Block ${height} not found`);
-  return response.json();
 }
 
 async function fetchBinaryTxs(height) {
@@ -292,7 +306,7 @@ function renderCard(state) {
   state.canvas.height = side;
   state.ctx.fillStyle = '#0d1117';
   state.ctx.fillRect(0, 0, side, side);
-  const usedH = state.txs.reduce((max, tx) => Math.max(max, tx.square.y + tx.square.r), 0);
+  const usedH = state.layout ? state.layout.usedHeight : 0;
   const draw = Math.max(state.width, usedH);
   state.gridSize = side / draw;
   state.offsetY = (side - usedH * state.gridSize) / 2;
@@ -309,22 +323,23 @@ function renderCard(state) {
 }
 
 function layoutBlock(txs) {
-  txs.forEach(tx => { tx._size = byteTxSize(tx.vsize); });
+  txs.forEach(tx => { tx._size = tx.size; });
   let weight = 0;
   txs.forEach(tx => weight += tx._size * tx._size);
   const width = Math.ceil(Math.sqrt(weight));
   const layout = new MondrianLayout(width);
   txs.forEach(tx => layout.place(tx, tx._size));
+  layout.txs = txs;
   return { layout, width };
 }
 
 async function loadCard(state) {
-  const [meta, txs] = await Promise.all([fetchBlockMeta(state.height), fetchBinaryTxs(state.height)]);
+  const txs = await fetchBinaryTxs(state.height);
   const { layout, width } = layoutBlock(txs);
   state.layout = layout;
   state.width = width;
   state.txs = txs;
-  state.meta.textContent = `${meta.tx_count.toLocaleString()} tx`;
+  state.meta.textContent = `${txs.length.toLocaleString()} tx`;
   state.loading.style.display = 'none';
   renderCard(state);
 }
