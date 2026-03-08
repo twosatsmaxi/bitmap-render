@@ -28,6 +28,9 @@ struct AppState {
 #[derive(Debug, Deserialize)]
 struct Block {
     id: String,
+    height: u64,
+    timestamp: u64,
+    size: u64,
     tx_count: usize,
 }
 
@@ -35,6 +38,15 @@ struct Block {
 struct Tx {
     txid: String,
     vsize: u64,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct BlockMeta {
+    id: String,
+    height: u64,
+    timestamp: u64,
+    size: u64,
+    tx_count: usize,
 }
 
 #[tokio::main]
@@ -82,6 +94,7 @@ async fn main() {
     let app = Router::new()
         .route("/healthz", get(healthz))
         .route("/api/block/{height}", get(get_block))
+        .route("/api/block/{height}/meta", get(get_block_meta))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
@@ -111,6 +124,30 @@ async fn get_block(
 
     state.cache.lock().await.put(height, payload.clone());
     Ok(binary_response(payload))
+}
+
+async fn get_block_meta(
+    State(state): State<AppState>,
+    Path(height): Path<u64>,
+) -> Result<impl IntoResponse, AppError> {
+    let block_hash = fetch_text(
+        &state.client,
+        format!("{}/block-height/{}", state.mempool_base_url, height),
+    )
+    .await?;
+    let block: Block = fetch_json(
+        &state.client,
+        format!("{}/block/{}", state.mempool_base_url, block_hash),
+    )
+    .await?;
+
+    Ok(axum::Json(BlockMeta {
+        id: block.id,
+        height: block.height,
+        timestamp: block.timestamp,
+        size: block.size,
+        tx_count: block.tx_count,
+    }))
 }
 
 fn binary_response(payload: Arc<[u8]>) -> Response<Body> {
