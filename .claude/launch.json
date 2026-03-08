@@ -4,7 +4,7 @@
     {
       "name": "bitmap-render",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["serve", "-p", "3456", "."],
+      "runtimeArgs": ["serve", "-s", "-p", "3456", "."],
       "port": 3456
     }
   ]

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Bitcoin Block 261250 — Bitfeed Clone</title>
+<title>Bitcoin Block Viewer — Bitfeed Clone</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { width:100%; height:100%; background:#0d1117; font-family:'Courier New',monospace; color:#fff; overflow:hidden; }
@@ -41,9 +41,53 @@
   }
   #tooltip .tid { color:#f7a23b; word-break:break-all; margin-bottom:2px; }
   #tooltip .row { display:flex; justify-content:space-between; gap:14px; }
+
+  /* ── Search bar */
+  #searchbar {
+    position:fixed; top:0; left:0; right:0; z-index:50;
+    display:flex; align-items:center; justify-content:center;
+    padding:10px 60px;
+    background:linear-gradient(to bottom, rgba(13,17,23,0.92) 60%, transparent);
+    pointer-events:none;
+  }
+  #search-form {
+    display:flex; align-items:center; gap:0;
+    width:100%; max-width:520px;
+    pointer-events:all;
+  }
+  #search-input {
+    flex:1; background:rgba(255,255,255,0.07); border:1px solid rgba(255,255,255,0.15);
+    border-right:none; border-radius:4px 0 0 4px;
+    color:#fff; font-family:'Courier New',monospace; font-size:13px;
+    padding:7px 12px; outline:none;
+    transition:border-color .15s;
+  }
+  #search-input::placeholder { color:rgba(255,255,255,0.3); }
+  #search-input:focus { border-color:rgba(247,162,59,0.6); }
+  #search-btn {
+    background:rgba(247,162,59,0.18); border:1px solid rgba(247,162,59,0.45);
+    border-radius:0 4px 4px 0; color:#f7a23b;
+    font-size:15px; padding:7px 13px; cursor:pointer;
+    display:flex; align-items:center; transition:background .15s;
+  }
+  #search-btn:hover { background:rgba(247,162,59,0.32); }
+  #search-err {
+    position:fixed; top:52px; left:50%; transform:translateX(-50%);
+    background:rgba(200,50,50,0.85); color:#fff; font-family:'Courier New',monospace;
+    font-size:12px; padding:5px 14px; border-radius:4px; z-index:51;
+    display:none; white-space:nowrap;
+  }
 </style>
 </head>
 <body>
+<div id="searchbar">
+  <form id="search-form">
+    <input id="search-input" type="text" placeholder="block height or hash…" autocomplete="off" spellcheck="false">
+    <button id="search-btn" type="submit">⌕</button>
+  </form>
+</div>
+<div id="search-err"></div>
+
 <div id="app">
   <div id="block-wrap">
     <div id="panel">
@@ -474,17 +518,40 @@ canvas.addEventListener('mouseleave', () => {
   hoveredTx = null; tooltip.style.display = 'none'; if (!animActive) drawAll();
 });
 
+// ── Fetch all tx pages for a block (mempool.space returns 25 per page)
+async function fetchAllTxs(hash, txCount) {
+  const PAGE = 25;
+  const pages = Math.ceil(txCount / PAGE);
+  // First page already fetched; fetch remaining in parallel batches of 10
+  const offsets = Array.from({ length: pages }, (_, i) => i * PAGE);
+  const BATCH = 10;
+  let all = [];
+  for (let i = 0; i < offsets.length; i += BATCH) {
+    const batch = offsets.slice(i, i + BATCH);
+    const results = await Promise.all(
+      batch.map(off =>
+        fetch(`https://mempool.space/api/block/${hash}/txs/${off}`).then(r => r.json())
+      )
+    );
+    all = all.concat(...results);
+    // Update loading text with progress
+    const pct = Math.round(((i + batch.length) / pages) * 100);
+    loadingEl.textContent = `Loading… ${pct}%`;
+  }
+  return all;
+}
+
 // ── Load block
 async function loadBlock(height) {
   loadingEl.style.display = 'block';
+  loadingEl.textContent = 'Loading…';
   canvas.style.display = 'none';
   animStartTime = null; hoveredTx = null;
   try {
     const hash = await fetch(`https://mempool.space/api/block-height/${height}`).then(r => r.text());
-    const [block, txs] = await Promise.all([
-      fetch(`https://mempool.space/api/block/${hash}`).then(r => r.json()),
-      fetch(`https://mempool.space/api/block/${hash}/txs/0`).then(r => r.json()),
-    ]);
+    const block = await fetch(`https://mempool.space/api/block/${hash}`).then(r => r.json());
+    const txs = await fetchAllTxs(hash, block.tx_count);
+
     blockData = block; txList = txs;
     setPanel(block, txs);
     layoutBlock(txs);
@@ -504,14 +571,109 @@ async function loadBlock(height) {
   }
 }
 
+// ── URL routing: /block/<height|hash>
+function parseRoute() {
+  const m = location.pathname.match(/\/block\/(?:height\/)?([0-9a-fA-F]+)/);
+  return m ? m[1] : null;
+}
+
+function navigate(heightOrHash) {
+  const isHash = /^[0-9a-fA-F]{64}$/.test(heightOrHash);
+  const path = isHash
+    ? `/block/${heightOrHash}`
+    : `/block/height/${heightOrHash}`;
+  history.pushState({}, '', path);
+  document.title = `Block ${heightOrHash} — Bitfeed Clone`;
+}
+
+async function loadBlockByInput(raw) {
+  const val = raw.trim();
+  if (!val) return;
+  const errEl = document.getElementById('search-err');
+  errEl.style.display = 'none';
+
+  try {
+    if (/^\d+$/.test(val)) {
+      // Height
+      navigate(val);
+      await loadBlock(parseInt(val, 10));
+    } else if (/^[0-9a-fA-F]{64}$/.test(val)) {
+      // Hash — resolve to height first, then load
+      navigate(val);
+      await loadBlockByHash(val);
+    } else {
+      throw new Error('Enter a block height (number) or 64-char hex hash');
+    }
+  } catch(e) {
+    errEl.textContent = e.message;
+    errEl.style.display = 'block';
+    setTimeout(() => errEl.style.display = 'none', 4000);
+  }
+}
+
+async function loadBlockByHash(hash) {
+  loadingEl.style.display = 'block';
+  loadingEl.textContent = 'Loading…';
+  canvas.style.display = 'none';
+  animStartTime = null; hoveredTx = null;
+  try {
+    const block = await fetch(`https://mempool.space/api/block/${hash}`)
+      .then(r => { if(!r.ok) throw new Error(`Block not found`); return r.json(); });
+    const txs = await fetchAllTxs(hash, block.tx_count);
+    blockData = block; txList = txs;
+    document.title = `Block ${block.height.toLocaleString()} — Bitfeed Clone`;
+    history.replaceState({}, '', `/block/height/${block.height}`);
+    document.getElementById('search-input').value = '';
+    setPanel(block, txs);
+    layoutBlock(txs);
+    buildAnimData(txs.length);
+    loadingEl.style.display = 'none';
+    canvas.style.display = 'block';
+    computeGrid();
+    canvas.width = canvasSize; canvas.height = canvasSize;
+    animActive = true; animStartTime = null;
+    requestAnimationFrame(animate);
+  } catch(e) {
+    loadingEl.textContent = `Error: ${e.message}`;
+    throw e;
+  }
+}
+
+// ── Patch loadBlock to also update URL + title
+const _loadBlock = loadBlock;
+loadBlock = async function(height) {
+  navigate(height);
+  document.title = `Block ${Number(height).toLocaleString()} — Bitfeed Clone`;
+  document.getElementById('search-input').value = '';
+  await _loadBlock(height);
+};
+
+// ── Search form
+document.getElementById('search-form').addEventListener('submit', e => {
+  e.preventDefault();
+  loadBlockByInput(document.getElementById('search-input').value);
+});
+
+// ── Browser back/forward
+window.addEventListener('popstate', () => {
+  const val = parseRoute();
+  if (val) loadBlockByInput(val);
+});
+
 window.addEventListener('resize', () => { if (layout && !animActive) drawAll(); });
 document.getElementById('close-btn').addEventListener('click', () => {
   canvas.style.display='none'; loadingEl.style.display='block'; loadingEl.textContent='';
 });
-document.getElementById('prev-btn').addEventListener('click', () => { if (blockData) loadBlock(blockData.height-1); });
-document.getElementById('next-btn').addEventListener('click', () => { if (blockData) loadBlock(blockData.height+1); });
+document.getElementById('prev-btn').addEventListener('click', () => { if (blockData) loadBlock(blockData.height - 1); });
+document.getElementById('next-btn').addEventListener('click', () => { if (blockData) loadBlock(blockData.height + 1); });
 
-loadBlock(261250);
+// ── Boot: read route or default
+const routeVal = parseRoute();
+if (routeVal) {
+  loadBlockByInput(routeVal);
+} else {
+  loadBlock(261250);
+}
 </script>
 </body>
 </html>
