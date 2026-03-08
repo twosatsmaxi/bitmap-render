@@ -98,7 +98,8 @@ async fn main() {
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
-        .allow_methods([Method::GET]);
+        .allow_methods([Method::GET])
+        .expose_headers(["x-block-hash".parse::<header::HeaderName>().unwrap()]);
     let app = Router::new()
         .route("/healthz", get(healthz))
         .route("/api/block/{height}", get(get_block))
