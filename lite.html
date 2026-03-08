@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bitcoin Block Viewer Lite</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { min-height: 100%; background:#0d1117; font-family:'Courier New',monospace; color:#fff; }
+  body { padding: 24px; }
+  #toolbar {
+    display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:20px;
+  }
+  #title { font-size:14px; letter-spacing:0.08em; text-transform:uppercase; color:#f7a23b; }
+  #search-form {
+    display:flex; align-items:center; gap:0; flex:1; min-width:280px; max-width:540px;
+  }
+  #search-input {
+    flex:1; background:rgba(255,255,255,0.07); border:1px solid rgba(255,255,255,0.15);
+    border-right:none; border-radius:4px 0 0 4px; color:#fff; font-family:'Courier New',monospace;
+    font-size:13px; padding:8px 12px; outline:none;
+  }
+  #search-btn, .step-btn {
+    background:rgba(247,162,59,0.18); border:1px solid rgba(247,162,59,0.45); color:#f7a23b;
+    font-family:'Courier New',monospace; font-size:13px; padding:8px 14px; cursor:pointer;
+  }
+  #search-btn { border-radius:0 4px 4px 0; }
+  .step-btn { border-radius:4px; }
+  #status { color:rgba(255,255,255,0.55); font-size:12px; min-height:16px; }
+  #grid {
+    display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:18px;
+  }
+  .card {
+    background:linear-gradient(180deg, rgba(255,255,255,0.035), rgba(255,255,255,0.015));
+    border:1px solid rgba(255,255,255,0.08); border-radius:10px; padding:12px;
+  }
+  .card-head {
+    display:flex; justify-content:space-between; align-items:baseline; gap:12px; margin-bottom:10px;
+    font-size:12px; color:rgba(255,255,255,0.78);
+  }
+  .card-head .height { color:#f7a23b; }
+  .canvas-wrap {
+    position:relative; width:100%; aspect-ratio:1 / 1; background:#090c11; border-radius:8px; overflow:hidden;
+  }
+  canvas { width:100%; height:100%; display:block; }
+  .loading {
+    position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+    color:rgba(255,255,255,0.35); font-size:12px;
+  }
+  #tooltip {
+    position:fixed; background:rgba(13,17,23,0.96); border:1px solid rgba(247,162,59,0.35);
+    color:#fff; font-size:11px; padding:8px 10px; border-radius:4px; pointer-events:none; display:none; z-index:100;
+  }
+  #tooltip .tid { color:#f7a23b; }
+  @media (max-width: 720px) {
+    body { padding: 16px; }
+    #toolbar { align-items:stretch; }
+    #search-form { max-width:none; }
+  }
+</style>
+</head>
+<body>
+<div id="toolbar">
+  <div id="title">Lite Block Grid</div>
+  <button class="step-btn" id="prev-btn" type="button">-4</button>
+  <button class="step-btn" id="next-btn" type="button">+4</button>
+  <form id="search-form">
+    <input id="search-input" type="text" placeholder="start block height" autocomplete="off" spellcheck="false">
+    <button id="search-btn" type="submit">Load</button>
+  </form>
+</div>
+<div id="status"></div>
+<div id="grid"></div>
+<div id="tooltip"></div>
+
+<script>
+const API_BASE = '';
+const GRID_COUNT = 4;
+const tooltip = document.getElementById('tooltip');
+const statusEl = document.getElementById('status');
+const gridEl = document.getElementById('grid');
+let startHeight = 261250;
+let cards = [];
+
+function hclToRgb(hDeg, c, l) {
+  const h = hDeg * Math.PI / 180;
+  const a = Math.cos(h) * c, b = Math.sin(h) * c;
+  const fy = (l + 16) / 116, fx = a / 500 + fy, fz = fy - b / 200;
+  const e = 0.008856, k = 903.3;
+  const X = (fx*fx*fx > e ? fx*fx*fx : (116*fx-16)/k) * 0.95047;
+  const Y =  l > k*e ? Math.pow((l+16)/116, 3) : l/k;
+  const Z = (fz*fz*fz > e ? fz*fz*fz : (116*fz-16)/k) * 1.08883;
+  const lin = v => v <= 0.0031308 ? 12.92*v : 1.055*Math.pow(v, 1/2.4) - 0.055;
+  return [
+    Math.max(0, Math.min(255, Math.round(lin(X*3.2406 + Y*-1.5372 + Z*-0.4986) * 255))),
+    Math.max(0, Math.min(255, Math.round(lin(X*-0.9689 + Y*1.8758 + Z*0.0415) * 255))),
+    Math.max(0, Math.min(255, Math.round(lin(X*0.0557 + Y*-0.2040 + Z*1.0570) * 255)))
+  ];
+}
+function hclCss(h, c, l) { const [r,g,b] = hclToRgb(h,c,l); return `rgb(${r},${g},${b})`; }
+const C = 78.225;
+const ORANGE = { h:0.181, l:0.472 };
+function txColor() { return hclCss(ORANGE.h*360, C, ORANGE.l*150); }
+function byteTxSize(vbytes) {
+  if (!vbytes) vbytes = 1;
+  return Math.max(1, Math.ceil(Math.sqrt(vbytes / 256)));
+}
+
+class MondrianLayout {
+  constructor(width) {
+    this.width = width;
+    this.rowOffset = 0;
+    this.rows = [];
+    this.txMap = [];
+  }
+  _getRow(y) { return this.rows[y - this.rowOffset]; }
+  _getSlot(x, y) { const r = this._getRow(y); return r ? r.map[x] : undefined; }
+  _addRow() {
+    const y = this.rows.length + this.rowOffset;
+    const row = { y, slots: [], map: {} };
+    this.rows.push(row);
+    return row;
+  }
+  _addSlot(slot) {
+    if (slot.r <= 0) return;
+    const existing = this._getSlot(slot.x, slot.y);
+    if (existing) {
+      if (slot.r > existing.r) existing.r = slot.r;
+      return existing;
+    }
+    const row = this._getRow(slot.y);
+    if (!row) return;
+    let insertAt = null;
+    for (let i = 0; i < row.slots.length; i++) {
+      if (row.slots[i].x > slot.x) { insertAt = i; break; }
+    }
+    if (insertAt === null) row.slots.push(slot);
+    else row.slots.splice(insertAt, 0, slot);
+    row.map[slot.x] = slot;
+    return slot;
+  }
+  _removeSlot(slot) {
+    const row = this._getRow(slot.y);
+    if (row) { delete row.map[slot.x]; const i = row.slots.indexOf(slot); if (i >= 0) row.slots.splice(i, 1); }
+  }
+  _fillSlot(slot, sw) {
+    const sq = { x: slot.x, y: slot.y, r: sw };
+    this._removeSlot(slot);
+    for (let ri = slot.y; ri < slot.y + sw; ri++) {
+      let row = this._getRow(ri);
+      if (row) {
+        const collisions = [];
+        let maxExcess = 0;
+        for (const ts of [...row.slots]) {
+          if (!((ts.x + ts.r) <= sq.x || ts.x >= (sq.x + sw))) {
+            collisions.push(ts);
+            maxExcess = Math.max(maxExcess, Math.max(0, (ts.x + ts.r) - (slot.x + slot.r)));
+          }
+        }
+        if (sq.x + sw < this.width && !row.map[sq.x + sw]) {
+          this._addSlot({ x: sq.x + sw, y: ri, r: slot.r - sw + maxExcess });
+        }
+        for (const col of collisions) {
+          col.r = slot.x - col.x;
+          if (col.r <= 0) this._removeSlot(col);
+        }
+      } else {
+        this._addRow();
+        if (slot.x > 0) this._addSlot({ x: 0, y: ri, r: slot.x });
+        if (sq.x + sw < this.width) this._addSlot({ x: sq.x + sw, y: ri, r: this.width - (sq.x + sw) });
+      }
+    }
+    for (let ri = Math.max(0, slot.y - sw); ri < slot.y; ri++) {
+      const row = this._getRow(ri);
+      if (!row) continue;
+      for (const ts of [...row.slots]) {
+        if (ts.x < sq.x + sw && ts.x + ts.r > sq.x && ts.y + ts.r >= slot.y) {
+          const oldW = ts.r;
+          ts.r = slot.y - ts.y;
+          if (ts.r <= 0) { this._removeSlot(ts); continue; }
+          let rem = { x: ts.x + ts.r, y: ts.y, w: oldW - ts.r, h: ts.r };
+          while (rem.w > 0 && rem.h > 0) {
+            if (rem.w <= rem.h) {
+              this._addSlot({ x: rem.x, y: rem.y, r: rem.w });
+              rem.y += rem.w; rem.h -= rem.w;
+            } else {
+              this._addSlot({ x: rem.x, y: rem.y, r: rem.h });
+              rem.x += rem.h; rem.w -= rem.h;
+            }
+          }
+        }
+      }
+    }
+    return sq;
+  }
+  place(tx, size) {
+    for (const row of this.rows) {
+      for (const slot of [...row.slots]) {
+        if (slot.r >= size) {
+          tx.square = this._fillSlot(slot, size);
+          this._recordTx(tx);
+          return tx.square;
+        }
+      }
+    }
+    const newRow = this._addRow();
+    const slot = { x: 0, y: newRow.y, r: this.width };
+    newRow.slots.push(slot);
+    newRow.map[0] = slot;
+    tx.square = this._fillSlot(slot, size);
+    this._recordTx(tx);
+    return tx.square;
+  }
+  _recordTx(tx) {
+    const sq = tx.square;
+    for (let dx = 0; dx < sq.r; dx++) {
+      for (let dy = 0; dy < sq.r; dy++) {
+        while (this.txMap.length <= sq.y + dy) this.txMap.push(new Array(this.width).fill(null));
+        this.txMap[sq.y + dy][sq.x + dx] = tx;
+      }
+    }
+  }
+  getTxAt(x, y) {
+    return (this.txMap[y] && this.txMap[y][x]) || null;
+  }
+}
+
+function parseBinaryTxs(buffer) {
+  const bytes = new Uint8Array(buffer);
+  if (bytes.length % 34 !== 0) throw new Error('Invalid binary block payload');
+  const txs = [];
+  for (let i = 0; i < bytes.length; i += 34) {
+    const txid = Array.from(bytes.slice(i, i + 32), b => b.toString(16).padStart(2, '0')).join('');
+    const vsize = bytes[i + 32] | (bytes[i + 33] << 8);
+    txs.push({ txid, vsize });
+  }
+  return txs;
+}
+
+async function fetchBlockMeta(height) {
+  const response = await fetch(`${API_BASE}/api/block/${height}/meta`);
+  if (!response.ok) throw new Error(`Block ${height} not found`);
+  return response.json();
+}
+
+async function fetchBinaryTxs(height) {
+  const response = await fetch(`${API_BASE}/api/block/${height}`);
+  if (!response.ok) throw new Error(`Failed to load block ${height}`);
+  return parseBinaryTxs(await response.arrayBuffer());
+}
+
+function buildCard(height) {
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.innerHTML = `
+    <div class="card-head">
+      <div class="height">#${height.toLocaleString()}</div>
+      <div class="meta">loading</div>
+    </div>
+    <div class="canvas-wrap">
+      <canvas></canvas>
+      <div class="loading">Loading…</div>
+    </div>`;
+  const canvas = card.querySelector('canvas');
+  const ctx = canvas.getContext('2d');
+  const loading = card.querySelector('.loading');
+  const meta = card.querySelector('.meta');
+  const state = { height, card, canvas, ctx, loading, meta, layout: null, txs: [], gridSize: 1, offsetY: 0, width: 1 };
+
+  canvas.addEventListener('mousemove', e => {
+    if (!state.layout) return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = (e.clientX - rect.left) * (canvas.width / rect.width);
+    const my = (e.clientY - rect.top) * (canvas.height / rect.height);
+    const gx = Math.floor(mx / state.gridSize);
+    const gy = Math.floor((my - state.offsetY) / state.gridSize);
+    const found = state.layout.getTxAt(gx, gy);
+    if (found) {
+      tooltip.style.cssText = `display:block;left:${e.clientX + 14}px;top:${e.clientY - 8}px`;
+      tooltip.innerHTML = `<div class="tid">${found.txid.slice(0, 20)}…${found.txid.slice(-8)}</div>`;
+    } else {
+      tooltip.style.display = 'none';
+    }
+  });
+  canvas.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
+  return state;
+}
+
+function renderCard(state) {
+  const side = state.canvas.clientWidth || 240;
+  state.canvas.width = side;
+  state.canvas.height = side;
+  state.ctx.fillStyle = '#0d1117';
+  state.ctx.fillRect(0, 0, side, side);
+  const usedH = state.txs.reduce((max, tx) => Math.max(max, tx.square.y + tx.square.r), 0);
+  const draw = Math.max(state.width, usedH);
+  state.gridSize = side / draw;
+  state.offsetY = (side - usedH * state.gridSize) / 2;
+  const unitPadding = state.gridSize / 4;
+  for (const tx of state.txs) {
+    const sq = tx.square;
+    const px = sq.x * state.gridSize + unitPadding;
+    const py = sq.y * state.gridSize + state.offsetY + unitPadding;
+    const pw = sq.r * state.gridSize - unitPadding * 2;
+    if (pw <= 0) continue;
+    state.ctx.fillStyle = txColor();
+    state.ctx.fillRect(px, py, pw, pw);
+  }
+}
+
+function layoutBlock(txs) {
+  txs.forEach(tx => { tx._size = byteTxSize(tx.vsize); });
+  let weight = 0;
+  txs.forEach(tx => weight += tx._size * tx._size);
+  const width = Math.ceil(Math.sqrt(weight));
+  const layout = new MondrianLayout(width);
+  txs.forEach(tx => layout.place(tx, tx._size));
+  return { layout, width };
+}
+
+async function loadCard(state) {
+  const [meta, txs] = await Promise.all([fetchBlockMeta(state.height), fetchBinaryTxs(state.height)]);
+  const { layout, width } = layoutBlock(txs);
+  state.layout = layout;
+  state.width = width;
+  state.txs = txs;
+  state.meta.textContent = `${meta.tx_count.toLocaleString()} tx`;
+  state.loading.style.display = 'none';
+  renderCard(state);
+}
+
+async function loadGrid(height) {
+  startHeight = height;
+  document.getElementById('search-input').value = String(height);
+  statusEl.textContent = `Loading blocks ${height.toLocaleString()}-${(height + GRID_COUNT - 1).toLocaleString()}…`;
+  gridEl.innerHTML = '';
+  cards = Array.from({ length: GRID_COUNT }, (_, i) => buildCard(height + i));
+  cards.forEach(card => gridEl.appendChild(card.card));
+  const results = await Promise.allSettled(cards.map(loadCard));
+  const failures = results.filter(r => r.status === 'rejected').length;
+  statusEl.textContent = failures
+    ? `Loaded ${GRID_COUNT - failures}/${GRID_COUNT} blocks`
+    : `Loaded blocks ${height.toLocaleString()}-${(height + GRID_COUNT - 1).toLocaleString()}`;
+  cards.forEach((card, i) => {
+    if (results[i].status === 'rejected') {
+      card.loading.textContent = 'Error';
+      card.meta.textContent = 'failed';
+    }
+  });
+}
+
+document.getElementById('search-form').addEventListener('submit', e => {
+  e.preventDefault();
+  const value = parseInt(document.getElementById('search-input').value, 10);
+  if (Number.isFinite(value)) loadGrid(value);
+});
+document.getElementById('prev-btn').addEventListener('click', () => loadGrid(Math.max(0, startHeight - GRID_COUNT)));
+document.getElementById('next-btn').addEventListener('click', () => loadGrid(startHeight + GRID_COUNT));
+window.addEventListener('resize', () => cards.forEach(card => { if (card.txs.length) renderCard(card); }));
+
+loadGrid(startHeight);
+</script>
+</body>
+</html>
