@@ -247,20 +247,15 @@ class MondrianLayout {
 
 function parseBinaryTxs(buffer) {
   const bytes = new Uint8Array(buffer);
-  if (bytes.length % 33 !== 0) throw new Error('Invalid binary block payload');
-  const txs = [];
-  for (let i = 0; i < bytes.length; i += 33) {
-    const txid = Array.from(bytes.slice(i, i + 32), b => b.toString(16).padStart(2, '0')).join('');
-    const size = bytes[i + 32] || 1;
-    txs.push({ txid, size });
-  }
-  return txs;
+  return Array.from(bytes, (size, index) => ({ index, size: size || 1 }));
 }
 
 async function fetchBinaryTxs(height) {
   const response = await fetch(`${API_BASE}/api/block/${height}`);
   if (!response.ok) throw new Error(`Failed to load block ${height}`);
-  return parseBinaryTxs(await response.arrayBuffer());
+  const hash = response.headers.get('X-Block-Hash');
+  const txs = parseBinaryTxs(await response.arrayBuffer());
+  return { hash, txs };
 }
 
 function buildCard(height) {
@@ -281,7 +276,7 @@ function buildCard(height) {
   const meta = card.querySelector('.meta');
   const state = { height, card, canvas, ctx, loading, meta, layout: null, txs: [], gridSize: 1, offsetY: 0, width: 1 };
 
-  canvas.addEventListener('mousemove', e => {
+  canvas.addEventListener('mousemove', async e => {
     if (!state.layout) return;
     const rect = canvas.getBoundingClientRect();
     const mx = (e.clientX - rect.left) * (canvas.width / rect.width);
@@ -291,7 +286,14 @@ function buildCard(height) {
     const found = state.layout.getTxAt(gx, gy);
     if (found) {
       tooltip.style.cssText = `display:block;left:${e.clientX + 14}px;top:${e.clientY - 8}px`;
-      tooltip.innerHTML = `<div class="tid">${found.txid.slice(0, 20)}…${found.txid.slice(-8)}</div>`;
+      if (!state.txidsPromise && state.hash) {
+        state.txidsPromise = fetch(`https://mempool.space/api/block/${state.hash}/txids`).then(r => r.json());
+      }
+      const txids = state.txidsPromise ? await state.txidsPromise : null;
+      const txid = txids ? txids[found.index] : null;
+      tooltip.innerHTML = txid
+        ? `<div class="tid">${txid.slice(0, 20)}…${txid.slice(-8)}</div>`
+        : `<div class="tid">tx #${found.index}</div>`;
     } else {
       tooltip.style.display = 'none';
     }
@@ -334,11 +336,12 @@ function layoutBlock(txs) {
 }
 
 async function loadCard(state) {
-  const txs = await fetchBinaryTxs(state.height);
+  const { hash, txs } = await fetchBinaryTxs(state.height);
   const { layout, width } = layoutBlock(txs);
   state.layout = layout;
   state.width = width;
   state.txs = txs;
+  state.hash = hash;
   state.meta.textContent = `${txs.length.toLocaleString()} tx`;
   state.loading.style.display = 'none';
   renderCard(state);

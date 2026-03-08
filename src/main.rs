@@ -42,7 +42,6 @@ struct TxOut {
 
 #[derive(Debug, Deserialize)]
 struct Tx {
-    txid: String,
     vout: Option<Vec<TxOut>>,
 }
 
@@ -182,7 +181,7 @@ fn binary_response(hash: &str, payload: Arc<[u8]>) -> Response<Body> {
         .expect("response should build")
 }
 
-async fn fetch_block_payload(state: &AppState, height: u64) -> Result<Vec<u8>, AppError> {
+async fn fetch_block_payload(state: &AppState, height: u64) -> Result<(String, Vec<u8>), AppError> {
     let block_hash = fetch_text(
         &state.client,
         format!("{}/block-height/{}", state.mempool_base_url, height),
@@ -207,7 +206,8 @@ async fn fetch_block_payload(state: &AppState, height: u64) -> Result<Vec<u8>, A
         transactions.append(&mut page);
     }
 
-    encode_transactions(&transactions)
+    let payload = encode_transactions(&transactions);
+    Ok((block.id, payload))
 }
 
 async fn fetch_text(client: &Client, url: String) -> Result<String, AppError> {
@@ -242,24 +242,14 @@ async fn fetch_json<T: for<'de> Deserialize<'de>>(
         .map_err(AppError::upstream_transport)
 }
 
-fn encode_transactions(transactions: &[Tx]) -> Result<Vec<u8>, AppError> {
-    let mut payload = Vec::with_capacity(transactions.len() * 33);
-    for tx in transactions {
-        let txid = hex::decode(&tx.txid).map_err(|_| AppError::invalid_txid(tx.txid.clone()))?;
-        if txid.len() != 32 {
-            return Err(AppError::invalid_txid(tx.txid.clone()));
-        }
-        let sum_vout: u64 = tx
-            .vout
-            .iter()
-            .flatten()
-            .filter_map(|o| o.value)
-            .sum();
-        let display_size = log_tx_size(sum_vout);
-        payload.extend_from_slice(&txid);
-        payload.push(display_size);
-    }
-    Ok(payload)
+fn encode_transactions(transactions: &[Tx]) -> Vec<u8> {
+    transactions
+        .iter()
+        .map(|tx| {
+            let sum_vout: u64 = tx.vout.iter().flatten().filter_map(|o| o.value).sum();
+            log_tx_size(sum_vout)
+        })
+        .collect()
 }
 
 /// Matches bitfeed's logTxSize: max(1, ceil(log10(satoshis)) - 5)
@@ -301,13 +291,6 @@ impl AppError {
         }
     }
 
-    fn invalid_txid(txid: String) -> Self {
-        Self {
-            status: StatusCode::BAD_GATEWAY,
-            message: format!("upstream returned invalid txid: {txid}"),
-        }
-    }
-
 }
 
 impl IntoResponse for AppError {
@@ -321,28 +304,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn encodes_transactions_as_txid_plus_display_size() {
+    fn encodes_transactions_as_size_only() {
         let transactions = vec![
-            Tx {
-                txid: "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
-                    .to_string(),
-                vout: Some(vec![TxOut { value: Some(1_000_000_000) }]), // 10 BTC → size 4
-            },
-            Tx {
-                txid: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-                    .to_string(),
-                vout: Some(vec![TxOut { value: Some(0) }]), // 0 sats → size 1
-            },
+            Tx { vout: Some(vec![TxOut { value: Some(1_000_000_000) }]) }, // 10 BTC → size 4
+            Tx { vout: Some(vec![TxOut { value: Some(0) }]) },             // 0 sats → size 1
         ];
 
-        let encoded = encode_transactions(&transactions).expect("payload should encode");
+        let encoded = encode_transactions(&transactions);
 
-        assert_eq!(encoded.len(), 66); // 2 * 33
-        assert_eq!(&encoded[..32], &hex::decode(&transactions[0].txid).unwrap());
-        // log_tx_size(1_000_000_000): ceil(log10(1e9))=9, 9-5=4
-        assert_eq!(encoded[32], 4);
-        assert_eq!(&encoded[33..65], &hex::decode(&transactions[1].txid).unwrap());
-        assert_eq!(encoded[65], 1); // 0 sats → size 1
+        assert_eq!(encoded.len(), 2);
+        assert_eq!(encoded[0], 4); // log_tx_size(1_000_000_000): ceil(log10(1e9))=9, 9-5=4
+        assert_eq!(encoded[1], 1); // 0 sats → size 1
     }
 
     #[test]

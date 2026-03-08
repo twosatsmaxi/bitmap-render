@@ -6,7 +6,6 @@ edition = "2024"
 [dependencies]
 axum = "0.8"
 brotli = "8.0"
-hex = "0.4"
 lru = "0.16"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1.0", features = ["derive"] }
