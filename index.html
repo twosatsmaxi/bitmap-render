@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bitcoin Block 261250 — Bitfeed Clone</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width:100%; height:100%; background:#0d1117; font-family:'Courier New',monospace; color:#fff; overflow:hidden; }
+  #app { display:flex; width:100vw; height:100vh; align-items:center; justify-content:center; }
+  #block-wrap { display:flex; align-items:center; position:relative; }
+  #panel {
+    width:190px; flex-shrink:0; padding-right:24px;
+    text-align:right; font-size:13px; line-height:1.65; color:#fff;
+  }
+  #panel b { font-size:15px; }
+  #panel .btc { color:#f7a23b; }
+  #canvas-wrap { position:relative; flex-shrink:0; }
+  canvas { display:block; }
+  #close-btn {
+    position:absolute; top:-8px; right:-44px;
+    width:30px; height:30px; border-radius:50%;
+    border:2px solid rgba(255,255,255,0.55); background:transparent;
+    color:#fff; font-size:14px; cursor:pointer;
+    display:flex; align-items:center; justify-content:center;
+  }
+  #prev-btn, #next-btn {
+    position:fixed; top:50%; transform:translateY(-50%);
+    background:transparent; border:none; color:rgba(255,255,255,0.6);
+    font-size:30px; cursor:pointer; z-index:10;
+    width:44px; height:44px; display:flex; align-items:center; justify-content:center;
+  }
+  #prev-btn { left:8px; }
+  #next-btn { right:8px; }
+  #loading { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); color:rgba(255,255,255,0.35); font-size:13px; pointer-events:none; }
+  #tooltip {
+    position:fixed; background:rgba(13,17,23,0.96); border:1px solid rgba(247,162,59,0.35);
+    color:#fff; font-family:'Courier New',monospace; font-size:11px;
+    padding:8px 10px; border-radius:4px; pointer-events:none; display:none; z-index:100;
+    max-width:300px; line-height:1.75;
+  }
+  #tooltip .tid { color:#f7a23b; word-break:break-all; margin-bottom:2px; }
+  #tooltip .row { display:flex; justify-content:space-between; gap:14px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="block-wrap">
+    <div id="panel">
+      <b>Block:</b><br>
+      <span id="p-height">—</span><br>
+      <span id="p-date">—</span><br>
+      <span class="btc">₿</span><br>
+      <span id="p-value">—</span><br>
+      <span id="p-usd">—</span><br>
+      <span id="p-bytes">—</span><br>
+      <span id="p-txcount">—</span><br>
+      <br>
+      avg fee rate<br>
+      <span id="p-feerate">—</span><br>
+      sats/vbyte
+    </div>
+    <div id="canvas-wrap">
+      <canvas id="canvas"></canvas>
+      <div id="loading">Loading…</div>
+      <button id="close-btn">✕</button>
+    </div>
+  </div>
+</div>
+<button id="prev-btn">‹</button>
+<button id="next-btn">›</button>
+<div id="tooltip"></div>
+
+<script>
+// ── HCL → RGB (D3-compatible, exact match to bitfeed's d3-color)
+function hclToRgb(hDeg, c, l) {
+  const h = hDeg * Math.PI / 180;
+  const a = Math.cos(h) * c, b = Math.sin(h) * c;
+  const fy = (l + 16) / 116, fx = a / 500 + fy, fz = fy - b / 200;
+  const e = 0.008856, k = 903.3;
+  const X = (fx*fx*fx > e ? fx*fx*fx : (116*fx-16)/k) * 0.95047;
+  const Y =  l > k*e ? Math.pow((l+16)/116, 3) : l/k;
+  const Z = (fz*fz*fz > e ? fz*fz*fz : (116*fz-16)/k) * 1.08883;
+  const lin = v => v <= 0.0031308 ? 12.92*v : 1.055*Math.pow(v, 1/2.4) - 0.055;
+  return [
+    Math.max(0, Math.min(255, Math.round(lin(X*3.2406 + Y*-1.5372 + Z*-0.4986) * 255))),
+    Math.max(0, Math.min(255, Math.round(lin(X*-0.9689 + Y*1.8758 + Z*0.0415) * 255))),
+    Math.max(0, Math.min(255, Math.round(lin(X*0.0557 + Y*-0.2040 + Z*1.0570) * 255)))
+  ];
+}
+function hclCss(h, c, l) { const [r,g,b] = hclToRgb(h,c,l); return `rgb(${r},${g},${b})`; }
+
+// ── Colours — exact from bitfeed/src/utils/color.js
+// h and l are in 0-1 space; render with h*360, C=78.225, l*150
+const C = 78.225;
+const ORANGE = { h:0.181, l:0.472 };
+const TEAL   = { h:0.475, l:0.55  };
+const PURPLE = { h:0.95,  l:0.35  };
+
+function mixColor(start, end, min, max, value) {
+  const dx = Math.max(0, Math.min(1, (value - min) / (max - min)));
+  return { h: start.h + dx*(end.h - start.h), l: start.l + dx*(end.l - start.l) };
+}
+
+// feerate==null OR coinbase → orange; else teal→purple via log2(feerate)
+function txColor(feerate, isCoinbase) {
+  if (isCoinbase || feerate == null) return hclCss(ORANGE.h*360, C, ORANGE.l*150);
+  const mixed = mixColor(TEAL, PURPLE, 1, Math.log2(128), Math.log2(Math.max(1, feerate)));
+  return hclCss(mixed.h*360, C, mixed.l*150);
+}
+
+// ── Size functions — exact from bitfeed/src/utils/misc.js
+function logTxSize(value) {
+  return Math.max(1, Math.ceil(Math.log10(value)) - 5);
+}
+function byteTxSize(vbytes) {
+  if (!vbytes) vbytes = 1;
+  return Math.max(1, Math.ceil(Math.sqrt(vbytes / 256)));
+}
+
+// ── Full Mondrian layout — ported from bitfeed/src/models/TxMondrianPoolScene.js
+class MondrianLayout {
+  constructor(width) {
+    this.width = width;
+    this.rowOffset = 0;
+    this.rows = [];   // rows[y - rowOffset]
+    this.txMap = [];
+  }
+
+  _getRow(y) { return this.rows[y - this.rowOffset]; }
+  _getSlot(x, y) { const r = this._getRow(y); return r ? r.map[x] : undefined; }
+
+  _addRow() {
+    const y = this.rows.length + this.rowOffset;
+    const row = { y, slots: [], map: {}, max: 0 };
+    this.rows.push(row);
+    return row;
+  }
+
+  _addSlot(slot) {
+    if (slot.r <= 0) return;
+    const existing = this._getSlot(slot.x, slot.y);
+    if (existing) {
+      if (slot.r > existing.r) existing.r = slot.r;
+      return existing;
+    }
+    const row = this._getRow(slot.y);
+    if (!row) return;
+    let insertAt = null;
+    for (let i = 0; i < row.slots.length; i++) {
+      if (row.slots[i].x > slot.x) { insertAt = i; break; }
+    }
+    if (insertAt === null) row.slots.push(slot);
+    else row.slots.splice(insertAt, 0, slot);
+    row.map[slot.x] = slot;
+    return slot;
+  }
+
+  _removeSlot(slot) {
+    const row = this._getRow(slot.y);
+    if (row) { delete row.map[slot.x]; const i = row.slots.indexOf(slot); if (i>=0) row.slots.splice(i,1); }
+  }
+
+  _fillSlot(slot, sw) {
+    const sq = { x: slot.x, y: slot.y, r: sw };
+    this._removeSlot(slot);
+
+    // Fix collisions in rows slot.y … slot.y+sw-1  (rows filled by the square)
+    for (let ri = slot.y; ri < slot.y + sw; ri++) {
+      let row = this._getRow(ri);
+      if (row) {
+        const collisions = [];
+        let maxExcess = 0;
+        for (const ts of [...row.slots]) {
+          if (!( (ts.x + ts.r) <= sq.x || ts.x >= (sq.x + sw) )) {
+            collisions.push(ts);
+            maxExcess = Math.max(maxExcess, Math.max(0, (ts.x + ts.r) - (slot.x + slot.r)));
+          }
+        }
+        // RHS slot after the square
+        if (sq.x + sw < this.width && !row.map[sq.x + sw]) {
+          this._addSlot({ x: sq.x + sw, y: ri, r: slot.r - sw + maxExcess });
+        }
+        // Shrink / remove collisions
+        for (const col of collisions) {
+          col.r = slot.x - col.x;
+          if (col.r > 0) ; else this._removeSlot(col);
+        }
+      } else {
+        // Row doesn't exist yet — create it
+        this._addRow();
+        if (slot.x > 0) this._addSlot({ x: 0, y: ri, r: slot.x });
+        if (sq.x + sw < this.width) this._addSlot({ x: sq.x + sw, y: ri, r: this.width - (sq.x + sw) });
+      }
+    }
+
+    // Fix collisions in rows BELOW the square (rows that had slots extending up into the square)
+    for (let ri = Math.max(0, slot.y - sw); ri < slot.y; ri++) {
+      const row = this._getRow(ri);
+      if (!row) continue;
+      for (const ts of [...row.slots]) {
+        if (ts.x < sq.x + sw && ts.x + ts.r > sq.x && ts.y + ts.r >= slot.y) {
+          const oldW = ts.r;
+          ts.r = slot.y - ts.y;
+          if (ts.r <= 0) { this._removeSlot(ts); continue; }
+          // Tile remaining free space with slots
+          let rem = { x: ts.x + ts.r, y: ts.y, w: oldW - ts.r, h: ts.r };
+          while (rem.w > 0 && rem.h > 0) {
+            if (rem.w <= rem.h) {
+              this._addSlot({ x: rem.x, y: rem.y, r: rem.w });
+              rem.y += rem.w; rem.h -= rem.w;
+            } else {
+              this._addSlot({ x: rem.x, y: rem.y, r: rem.h });
+              rem.x += rem.h; rem.w -= rem.h;
+            }
+          }
+        }
+      }
+    }
+
+    return sq;
+  }
+
+  place(tx, size) {
+    // Search all existing rows for a slot large enough
+    for (const row of this.rows) {
+      for (const slot of [...row.slots]) {
+        if (slot.r >= size) {
+          tx.square = this._fillSlot(slot, size);
+          this._recordTx(tx);
+          return tx.square;
+        }
+      }
+    }
+    // No fit → new row
+    const newRow = this._addRow();
+    const slot = { x: 0, y: newRow.y, r: this.width };
+    newRow.slots.push(slot); newRow.map[0] = slot;
+    tx.square = this._fillSlot(slot, size);
+    this._recordTx(tx);
+    return tx.square;
+  }
+
+  _recordTx(tx) {
+    const sq = tx.square;
+    for (let dx = 0; dx < sq.r; dx++) {
+      for (let dy = 0; dy < sq.r; dy++) {
+        const oy = sq.y + dy - this.rowOffset;
+        while (this.txMap.length <= oy) this.txMap.push(new Array(this.width).fill(null));
+        this.txMap[oy][sq.x + dx] = tx;
+      }
+    }
+  }
+
+  getTxAt(x, y) {
+    const oy = y - this.rowOffset;
+    return (this.txMap[oy] && this.txMap[oy][x]) || null;
+  }
+
+  get totalRows() {
+    if (!this.rows.length) return 0;
+    const last = this.rows[this.rows.length - 1];
+    return last.y + last.max + 1;
+  }
+
+  get usedHeight() {
+    // max y coordinate used
+    let max = 0;
+    for (const tx of allTxs) {
+      if (tx.square) max = Math.max(max, tx.square.y + tx.square.r);
+    }
+    return max;
+  }
+}
+
+// ── State
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const loadingEl = document.getElementById('loading');
+const tooltip = document.getElementById('tooltip');
+let blockData = null, txList = [], layout = null;
+let blockGridWidth = 1, gridSize = 1, unitPadding = 0, canvasSize = 0;
+let offsetX = 0, offsetY = 0;
+let hoveredTx = null;
+let btcPrice = 67288;
+let allTxs = []; // reference for usedHeight
+
+// ── Fetch live BTC price
+fetch('https://mempool.space/api/v1/prices').then(r=>r.json()).then(d=>{ if(d.USD) btcPrice=d.USD; }).catch(()=>{});
+
+// ── Panel
+function setPanel(block, txns) {
+  document.getElementById('p-height').textContent = block.height.toLocaleString();
+  const d = new Date(block.timestamp * 1000);
+  const pad = n => String(n).padStart(2,'0');
+  // Local time — matches bitfeed's display
+  document.getElementById('p-date').textContent =
+    `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+
+  let totalSats = 0, totalFees = 0, totalVsize = 0;
+  txns.forEach((tx, i) => {
+    if (tx.vout) tx.vout.forEach(o => totalSats += (o.value || 0));
+    if (i > 0) {
+      if (tx.weight) totalVsize += Math.ceil(tx.weight / 4);
+      else if (tx.size) totalVsize += tx.size;
+      if (tx.fee) totalFees += tx.fee;
+    }
+  });
+
+  const btc = totalSats / 1e8;
+  document.getElementById('p-value').textContent = btc.toFixed(6);
+  const usd = btc * btcPrice;
+  document.getElementById('p-usd').textContent = usd >= 1e6
+    ? `≈ $ ${(usd/1e6).toFixed(2)}M` : `≈ $ ${usd.toLocaleString(undefined,{maximumFractionDigits:0})}`;
+  document.getElementById('p-bytes').textContent = `${(block.size||0).toLocaleString()} bytes`;
+  document.getElementById('p-txcount').textContent =
+    `${(block.tx_count||txns.length).toLocaleString()} transactions`;
+  const avg = totalVsize > 0 ? totalFees / totalVsize : 0;
+  document.getElementById('p-feerate').textContent = avg > 0 ? avg.toFixed(2) : '—';
+}
+
+// ── tx value in satoshis (sum of outputs)
+function txValue(tx) {
+  if (!tx.vout || !tx.vout.length) return 1;
+  return tx.vout.reduce((s, o) => s + (o.value || 0), 0);
+}
+
+// ── Layout — matches TxBlockScene exactly
+function layoutBlock(txns) {
+  allTxs = txns;
+
+  // Compute size for each tx
+  txns.forEach(tx => {
+    tx._size = logTxSize(Math.max(1, txValue(tx)));
+  });
+
+  // blockWidth = ceil(sqrt(sum of size^2))
+  let blockWeight = 0;
+  txns.forEach(tx => blockWeight += tx._size * tx._size);
+  blockGridWidth = Math.ceil(Math.sqrt(blockWeight));
+
+  layout = new MondrianLayout(blockGridWidth);
+  // Block order (no sort) — same as bitfeed
+  txns.forEach(tx => layout.place(tx, tx._size));
+}
+
+// ── Find max y used
+function maxUsedY() {
+  let max = 0;
+  allTxs.forEach(tx => { if (tx.square) max = Math.max(max, tx.square.y + tx.square.r); });
+  return max;
+}
+
+// ── Canvas size
+function getCanvasSize() {
+  return Math.min(window.innerWidth - 230, window.innerHeight - 48, 680);
+}
+
+// ── Draw
+function computeGrid() {
+  canvasSize = getCanvasSize();
+  const usedH = maxUsedY();
+  const draw = Math.max(blockGridWidth, usedH);
+  gridSize = canvasSize / draw;
+  unitPadding = gridSize / 4; // exact match to bitfeed: unitPadding = gridSize / 4
+  offsetY = (canvasSize - usedH * gridSize) / 2;
+  offsetX = 0;
+}
+
+function drawAll(animProgress) {
+  // animProgress: map from tx index → 0..1 alpha (undefined = fully drawn)
+  computeGrid();
+  canvas.width = canvasSize;
+  canvas.height = canvasSize;
+  ctx.fillStyle = '#0d1117';
+  ctx.fillRect(0, 0, canvasSize, canvasSize);
+
+  allTxs.forEach((tx, i) => {
+    const sq = tx.square;
+    if (!sq) return;
+
+    const px = sq.x * gridSize + unitPadding;
+    const py = sq.y * gridSize + offsetY + unitPadding;
+    const pw = sq.r * gridSize - unitPadding * 2;
+
+    if (pw <= 0) return;
+
+    // bitfeed: feerate==null → orange. mempool.space API doesn't return tx.feerate
+    // for historical blocks, so all tiles render orange (matching original)
+    const feerate = tx.feerate ?? null;
+    const isCoinbase = (i === 0);
+    const color = txColor(feerate, isCoinbase);
+
+    const alpha = animProgress ? (animProgress[i] ?? 1) : 1;
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = color;
+    ctx.fillRect(px, py, pw, pw); // always square
+
+    if (hoveredTx === tx) {
+      ctx.globalAlpha = 0.28;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(px, py, pw, pw);
+    }
+    ctx.globalAlpha = 1;
+  });
+}
+
+// ── Animation (tiles fade in, pre-computed per-load)
+let animStartTime = null;
+let animActive = false;
+let animData = []; // [{delay, dur}] pre-computed once per block load
+
+function buildAnimData(count) {
+  animData = Array.from({ length: count }, (_, i) => ({
+    delay: (i / count) * 500 + Math.random() * 350,
+    dur:   850 + Math.random() * 500,
+  }));
+}
+
+function animate(timestamp) {
+  if (!animStartTime) animStartTime = timestamp;
+  const elapsed = timestamp - animStartTime;
+
+  const progress = {};
+  allTxs.forEach((_, i) => {
+    const { delay, dur } = animData[i] || { delay: 0, dur: 1000 };
+    const t = Math.max(0, elapsed - delay);
+    let p = Math.min(1, t / dur);
+    progress[i] = 1 - Math.pow(1 - p, 3); // ease-out cubic
+  });
+
+  drawAll(progress);
+
+  const maxEnd = Math.max(...animData.map(d => d.delay + d.dur));
+  if (elapsed < maxEnd) {
+    requestAnimationFrame(animate);
+  } else {
+    animActive = false;
+    drawAll();
+  }
+}
+
+// ── Hover / tooltip
+function txAt(mx, my) {
+  const gx = Math.floor((mx - offsetX) / gridSize);
+  const gy = Math.floor((my - offsetY) / gridSize);
+  if (layout && gx >= 0 && gy >= 0 && gx < blockGridWidth) {
+    return layout.getTxAt(gx, gy);
+  }
+  return null;
+}
+
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (canvas.width / rect.width);
+  const my = (e.clientY - rect.top) * (canvas.height / rect.height);
+  const found = txAt(mx, my);
+  if (found !== hoveredTx) { hoveredTx = found; if (!animActive) drawAll(); }
+  if (found) {
+    const vs = found.weight ? Math.ceil(found.weight / 4) : (found.size || 0);
+    const fr = (found.fee && vs) ? (found.fee / vs).toFixed(2) : '—';
+    const val = (txValue(found) / 1e8).toFixed(8);
+    tooltip.style.cssText = `display:block;left:${e.clientX+14}px;top:${e.clientY-8}px`;
+    tooltip.innerHTML = `
+      <div class="tid">${(found.txid||'').slice(0,20)}…${(found.txid||'').slice(-8)}</div>
+      <div class="row"><span>vsize</span><span>${vs} vbytes</span></div>
+      <div class="row"><span>fee rate</span><span>${fr} sat/vbyte</span></div>
+      <div class="row"><span>value</span><span>₿ ${val}</span></div>`;
+  } else {
+    tooltip.style.display = 'none';
+  }
+});
+canvas.addEventListener('mouseleave', () => {
+  hoveredTx = null; tooltip.style.display = 'none'; if (!animActive) drawAll();
+});
+
+// ── Load block
+async function loadBlock(height) {
+  loadingEl.style.display = 'block';
+  canvas.style.display = 'none';
+  animStartTime = null; hoveredTx = null;
+  try {
+    const hash = await fetch(`https://mempool.space/api/block-height/${height}`).then(r => r.text());
+    const [block, txs] = await Promise.all([
+      fetch(`https://mempool.space/api/block/${hash}`).then(r => r.json()),
+      fetch(`https://mempool.space/api/block/${hash}/txs/0`).then(r => r.json()),
+    ]);
+    blockData = block; txList = txs;
+    setPanel(block, txs);
+    layoutBlock(txs);
+    buildAnimData(txs.length);
+
+    loadingEl.style.display = 'none';
+    canvas.style.display = 'block';
+    computeGrid();
+    canvas.width = canvasSize; canvas.height = canvasSize;
+
+    animActive = true;
+    animStartTime = null;
+    requestAnimationFrame(animate);
+  } catch(err) {
+    loadingEl.textContent = `Error: ${err.message}`;
+    console.error(err);
+  }
+}
+
+window.addEventListener('resize', () => { if (layout && !animActive) drawAll(); });
+document.getElementById('close-btn').addEventListener('click', () => {
+  canvas.style.display='none'; loadingEl.style.display='block'; loadingEl.textContent='';
+});
+document.getElementById('prev-btn').addEventListener('click', () => { if (blockData) loadBlock(blockData.height-1); });
+document.getElementById('next-btn').addEventListener('click', () => { if (blockData) loadBlock(blockData.height+1); });
+
+loadBlock(261250);
+</script>
+</body>
+</html>
