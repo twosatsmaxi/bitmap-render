@@ -23,7 +23,7 @@ const PAGE_SIZE: usize = 25;
 struct AppState {
     client: Client,
     mempool_base_url: String,
-    cache: Arc<Mutex<LruCache<u64, Arc<[u8]>>>>,
+    cache: Arc<Mutex<LruCache<u64, (String, Arc<[u8]>)>>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -125,15 +125,15 @@ async fn get_block(
     State(state): State<AppState>,
     Path(height): Path<u64>,
 ) -> Result<Response<Body>, AppError> {
-    if let Some(cached) = state.cache.lock().await.get(&height).cloned() {
-        return Ok(binary_response(cached));
+    if let Some((hash, payload)) = state.cache.lock().await.get(&height).cloned() {
+        return Ok(binary_response(&hash, payload));
     }
 
-    let payload = fetch_block_payload(&state, height).await?;
+    let (hash, payload) = fetch_block_payload(&state, height).await?;
     let payload = Arc::<[u8]>::from(payload);
 
-    state.cache.lock().await.put(height, payload.clone());
-    Ok(binary_response(payload))
+    state.cache.lock().await.put(height, (hash.clone(), payload.clone()));
+    Ok(binary_response(&hash, payload))
 }
 
 async fn get_block_meta(
@@ -160,7 +160,7 @@ async fn get_block_meta(
     }))
 }
 
-fn binary_response(payload: Arc<[u8]>) -> Response<Body> {
+fn binary_response(hash: &str, payload: Arc<[u8]>) -> Response<Body> {
     let compressed = brotli_compress(payload.as_ref()).unwrap_or_else(|err| {
         error!("brotli compression failed: {err}");
         payload.to_vec()
@@ -177,6 +177,7 @@ fn binary_response(payload: Arc<[u8]>) -> Response<Body> {
             HeaderValue::from_static("public, max-age=31536000, immutable"),
         )
         .header(header::CONTENT_ENCODING, HeaderValue::from_static("br"))
+        .header("X-Block-Hash", hash)
         .body(Body::from(compressed))
         .expect("response should build")
 }
