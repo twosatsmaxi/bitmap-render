@@ -317,6 +317,9 @@ class MondrianLayout {
   }
 }
 
+// ── API config (?api_base=http://localhost:3000)
+const API_BASE = new URLSearchParams(location.search).get('api_base') || 'http://localhost:3000';
+
 // ── State
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
@@ -329,25 +332,27 @@ let hoveredTx = null;
 let btcPrice = 67288;
 let allTxs = []; // reference for usedHeight
 
-// ── Fetch live BTC price
+// ── Fetch live BTC price (direct — backend doesn't proxy prices)
 fetch('https://mempool.space/api/v1/prices').then(r=>r.json()).then(d=>{ if(d.USD) btcPrice=d.USD; }).catch(()=>{});
 
 // ── Panel
 function setPanel(block, txns) {
   document.getElementById('p-height').textContent = block.height.toLocaleString();
-  const d = new Date(block.timestamp * 1000);
-  const pad = n => String(n).padStart(2,'0');
-  // Local time — matches bitfeed's display
-  document.getElementById('p-date').textContent =
-    `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  if (block.timestamp) {
+    const d = new Date(block.timestamp * 1000);
+    const pad = n => String(n).padStart(2,'0');
+    document.getElementById('p-date').textContent =
+      `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  } else {
+    document.getElementById('p-date').textContent = '—';
+  }
 
   let totalSats = 0, totalFees = 0, totalVsize = 0;
   txns.forEach((tx, i) => {
-    if (tx.vout) tx.vout.forEach(o => totalSats += (o.value || 0));
+    totalSats += tx.value || 0;
     if (i > 0) {
-      if (tx.weight) totalVsize += Math.ceil(tx.weight / 4);
-      else if (tx.size) totalVsize += tx.size;
-      if (tx.fee) totalFees += tx.fee;
+      totalVsize += tx.vsize || 0;
+      totalFees += tx.fee || 0;
     }
   });
 
@@ -363,11 +368,8 @@ function setPanel(block, txns) {
   document.getElementById('p-feerate').textContent = avg > 0 ? avg.toFixed(2) : '—';
 }
 
-// ── tx value in satoshis (sum of outputs)
-function txValue(tx) {
-  if (!tx.vout || !tx.vout.length) return 1;
-  return tx.vout.reduce((s, o) => s + (o.value || 0), 0);
-}
+// ── tx value in satoshis
+function txValue(tx) { return tx.value || 1; }
 
 // ── Layout — matches TxBlockScene exactly
 function layoutBlock(txns) {
@@ -501,12 +503,12 @@ canvas.addEventListener('mousemove', e => {
   const found = txAt(mx, my);
   if (found !== hoveredTx) { hoveredTx = found; if (!animActive) drawAll(); }
   if (found) {
-    const vs = found.weight ? Math.ceil(found.weight / 4) : (found.size || 0);
-    const fr = (found.fee && vs) ? (found.fee / vs).toFixed(2) : '—';
+    const vs = found.vsize || 0;
+    const fr = found.feerate != null ? found.feerate.toFixed(2) : '—';
     const val = (txValue(found) / 1e8).toFixed(8);
     tooltip.style.cssText = `display:block;left:${e.clientX+14}px;top:${e.clientY-8}px`;
     tooltip.innerHTML = `
-      <div class="tid">${(found.txid||'').slice(0,20)}…${(found.txid||'').slice(-8)}</div>
+      <div class="tid">${found.txid ? `${found.txid.slice(0,20)}…${found.txid.slice(-8)}` : 'tx #—'}</div>
       <div class="row"><span>vsize</span><span>${vs} vbytes</span></div>
       <div class="row"><span>fee rate</span><span>${fr} sat/vbyte</span></div>
       <div class="row"><span>value</span><span>₿ ${val}</span></div>`;
@@ -518,29 +520,6 @@ canvas.addEventListener('mouseleave', () => {
   hoveredTx = null; tooltip.style.display = 'none'; if (!animActive) drawAll();
 });
 
-// ── Fetch all tx pages for a block (mempool.space returns 25 per page)
-async function fetchAllTxs(hash, txCount) {
-  const PAGE = 25;
-  const pages = Math.ceil(txCount / PAGE);
-  // First page already fetched; fetch remaining in parallel batches of 10
-  const offsets = Array.from({ length: pages }, (_, i) => i * PAGE);
-  const BATCH = 10;
-  let all = [];
-  for (let i = 0; i < offsets.length; i += BATCH) {
-    const batch = offsets.slice(i, i + BATCH);
-    const results = await Promise.all(
-      batch.map(off =>
-        fetch(`https://mempool.space/api/block/${hash}/txs/${off}`).then(r => r.json())
-      )
-    );
-    all = all.concat(...results);
-    // Update loading text with progress
-    const pct = Math.round(((i + batch.length) / pages) * 100);
-    loadingEl.textContent = `Loading… ${pct}%`;
-  }
-  return all;
-}
-
 // ── Load block
 async function loadBlock(height) {
   loadingEl.style.display = 'block';
@@ -548,9 +527,10 @@ async function loadBlock(height) {
   canvas.style.display = 'none';
   animStartTime = null; hoveredTx = null;
   try {
-    const hash = await fetch(`https://mempool.space/api/block-height/${height}`).then(r => r.text());
-    const block = await fetch(`https://mempool.space/api/block/${hash}`).then(r => r.json());
-    const txs = await fetchAllTxs(hash, block.tx_count);
+    const [block, txs] = await Promise.all([
+      fetch(`${API_BASE}/api/block/${height}/meta`).then(r => { if(!r.ok) throw new Error('Block not found'); return r.json(); }),
+      fetch(`${API_BASE}/api/block/${height}/txs`).then(r => { if(!r.ok) throw new Error('Block not found'); return r.json(); }),
+    ]);
 
     blockData = block; txList = txs;
     setPanel(block, txs);
@@ -617,22 +597,12 @@ async function loadBlockByHash(hash) {
   canvas.style.display = 'none';
   animStartTime = null; hoveredTx = null;
   try {
-    const block = await fetch(`https://mempool.space/api/block/${hash}`)
-      .then(r => { if(!r.ok) throw new Error(`Block not found`); return r.json(); });
-    const txs = await fetchAllTxs(hash, block.tx_count);
-    blockData = block; txList = txs;
-    document.title = `Block ${block.height.toLocaleString()} — Bitfeed Clone`;
-    history.replaceState({}, '', `/block/height/${block.height}`);
+    const { height } = await fetch(`${API_BASE}/api/blockheight/${hash}`)
+      .then(r => { if(!r.ok) throw new Error('Block not found'); return r.json(); });
+    document.title = `Block ${Number(height).toLocaleString()} — Bitfeed Clone`;
+    history.replaceState({}, '', `/block/height/${height}`);
     document.getElementById('search-input').value = '';
-    setPanel(block, txs);
-    layoutBlock(txs);
-    buildAnimData(txs.length);
-    loadingEl.style.display = 'none';
-    canvas.style.display = 'block';
-    computeGrid();
-    canvas.width = canvasSize; canvas.height = canvasSize;
-    animActive = true; animStartTime = null;
-    requestAnimationFrame(animate);
+    await loadBlock(height);
   } catch(e) {
     loadingEl.textContent = `Error: ${e.message}`;
     throw e;

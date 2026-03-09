@@ -74,10 +74,9 @@
 <div id="tooltip"></div>
 
 <script>
-const API_BASE = (() => {
-  const param = new URLSearchParams(location.search).get('api_base');
-  return param || 'http://localhost:3000';
-})();
+const _liteParams = new URLSearchParams(location.search);
+const API_BASE = _liteParams.get('api_base') || 'http://localhost:3000';
+const MEMPOOL_BASE = _liteParams.get('mempool_base') || 'https://mempool.space';
 const GRID_COUNT = 4;
 const tooltip = document.getElementById('tooltip');
 const statusEl = document.getElementById('status');
@@ -287,7 +286,7 @@ function buildCard(height) {
     if (found) {
       tooltip.style.cssText = `display:block;left:${e.clientX + 14}px;top:${e.clientY - 8}px`;
       if (!state.txidsPromise && state.hash) {
-        state.txidsPromise = fetch(`https://mempool.space/api/block/${state.hash}/txids`).then(r => r.json());
+        state.txidsPromise = fetch(`${MEMPOOL_BASE}/api/block/${state.hash}/txids`).then(r => r.json());
       }
       const txids = state.txidsPromise ? await state.txidsPromise : null;
       const txid = txids ? txids[found.index] : null;
