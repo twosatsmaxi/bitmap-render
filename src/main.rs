@@ -168,6 +168,8 @@ async fn main() {
             "/",
             env!("CARGO_PKG_VERSION")
         ))
+        .pool_idle_timeout(std::time::Duration::from_secs(30))
+        .tcp_keepalive(std::time::Duration::from_secs(15))
         .build()
         .expect("failed to build reqwest client");
 
@@ -500,9 +502,17 @@ struct AppError {
 
 impl AppError {
     fn upstream_transport(error: reqwest::Error) -> Self {
+        error!(
+            is_connect=%error.is_connect(),
+            is_timeout=%error.is_timeout(),
+            is_request=%error.is_request(),
+            is_decode=%error.is_decode(),
+            url=?error.url(),
+            "upstream error: {error:#}"
+        );
         Self {
             status: StatusCode::BAD_GATEWAY,
-            message: format!("upstream request failed: {error}"),
+            message: format!("upstream request failed: {error:#}"),
         }
     }
 
