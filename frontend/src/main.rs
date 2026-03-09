@@ -88,6 +88,26 @@ fn block_card(props: &BlockCardProps) -> Html {
     }
 }
 
+fn hcl_to_rgb(h_deg: f64, c: f64, l: f64) -> (u8, u8, u8) {
+    let h = h_deg * std::f64::consts::PI / 180.0;
+    let a = h.cos() * c;
+    let b = h.sin() * c;
+    let fy = (l + 16.0) / 116.0;
+    let fx = a / 500.0 + fy;
+    let fz = fy - b / 200.0;
+    let e = 0.008856;
+    let k = 903.3;
+    let x = if fx.powi(3) > e { fx.powi(3) } else { (116.0 * fx - 16.0) / k } * 0.95047;
+    let y = if l > k * e { ((l + 16.0) / 116.0).powi(3) } else { l / k };
+    let z = if fz.powi(3) > e { fz.powi(3) } else { (116.0 * fz - 16.0) / k } * 1.08883;
+    let lin = |v: f64| if v <= 0.0031308 { 12.92 * v } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+    (
+        (lin(x * 3.2406 + y * -1.5372 + z * -0.4986) * 255.0).round().clamp(0.0, 255.0) as u8,
+        (lin(x * -0.9689 + y * 1.8758 + z * 0.0415) * 255.0).round().clamp(0.0, 255.0) as u8,
+        (lin(x * 0.0557 + y * -0.2040 + z * 1.0570) * 255.0).round().clamp(0.0, 255.0) as u8,
+    )
+}
+
 fn render_squares(ctx: &CanvasRenderingContext2d, squares: &[Square], layout_width: i32, used_h: i32, canvas_size: i32) {
     ctx.set_fill_style(&"#0d1117".into());
     ctx.fill_rect(0.0, 0.0, canvas_size as f64, canvas_size as f64);
@@ -97,7 +117,8 @@ fn render_squares(ctx: &CanvasRenderingContext2d, squares: &[Square], layout_wid
     let offset_y = (canvas_size as f64 - used_h as f64 * grid_size) / 2.0;
     let unit_padding = grid_size / 4.0;
     
-    ctx.set_fill_style(&"#f7a23b".into()); // Simplified orange
+    let (r, g, b) = hcl_to_rgb(0.181 * 360.0, 78.225, 0.472 * 150.0);
+    ctx.set_fill_style(&format!("rgb({},{},{})", r, g, b).into());
     
     for sq in squares {
         let px = sq.x as f64 * grid_size + unit_padding;
