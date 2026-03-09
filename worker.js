@@ -194,14 +194,28 @@ function renderSquares(ctx, squares, layoutWidth, usedH, canvasSize) {
   }
 }
 
-// ── Worker state ────────────────────────────────────────────────────────────
+// ── Worker state & WASM Init ────────────────────────────────────────────────
 let _squares = null;
 let _layoutWidth = 0;
 let _usedHeight = 0;
 let _offscreen = null;
 let _ctx = null;
 
-self.onmessage = function(e) {
+let wasmInitPromise = null;
+try {
+  importScripts('./wasm/pkg/wasm.js');
+  wasmInitPromise = wasm_bindgen('./wasm/pkg/wasm_bg.wasm')
+    .then(() => true)
+    .catch((e) => {
+      console.error('[Worker] WASM init failed', e);
+      return false;
+    });
+} catch (e) {
+  console.error('[Worker] Failed to load WASM script', e);
+  wasmInitPromise = Promise.resolve(false);
+}
+
+self.onmessage = async function(e) {
   const { type } = e.data;
 
   if (type === 'layout') {
@@ -212,14 +226,47 @@ self.onmessage = function(e) {
       _ctx = _offscreen.getContext('2d');
     }
 
-    const txs = parseBinaryTxs(buffer);
-    const { layout, width } = layoutBlock(txs);
+    const wasmReady = await wasmInitPromise;
+    const bytes = new Uint8Array(buffer);
+    
+    let layoutWidth = 0;
+    let usedHeight = 0;
+    let squares = [];
 
-    _layoutWidth = width;
-    _usedHeight = layout.usedHeight;
-    _squares = txs
-      .filter(tx => tx.square)
-      .map(tx => ({ x: tx.square.x, y: tx.square.y, r: tx.square.r, index: tx.index }));
+    if (wasmReady) {
+      const start = performance.now();
+      const results = wasm_bindgen.layout_block(bytes);
+      const end = performance.now();
+      console.log(`[Worker] layoutBlock WASM took ${(end - start).toFixed(2)}ms for ${bytes.length} txs`);
+      
+      layoutWidth = results[0];
+      usedHeight = results[1];
+      for (let i = 0; i < bytes.length; i++) {
+        const idx = 2 + i * 3;
+        squares.push({
+          index: i,
+          x: results[idx],
+          y: results[idx + 1],
+          r: results[idx + 2]
+        });
+      }
+    } else {
+      const txs = parseBinaryTxs(buffer);
+      const start = performance.now();
+      const { layout, width } = layoutBlock(txs);
+      const end = performance.now();
+      console.log(`[Worker] layoutBlock JS took ${(end - start).toFixed(2)}ms for ${txs.length} txs`);
+
+      layoutWidth = width;
+      usedHeight = layout.usedHeight;
+      squares = txs
+        .filter(tx => tx.square)
+        .map(tx => ({ x: tx.square.x, y: tx.square.y, r: tx.square.r, index: tx.index }));
+    }
+
+    _layoutWidth = layoutWidth;
+    _usedHeight = usedHeight;
+    _squares = squares;
 
     if (_offscreen) {
       _offscreen.width = canvasSize;
@@ -229,7 +276,7 @@ self.onmessage = function(e) {
 
     self.postMessage({
       type: 'done',
-      txCount: txs.length,
+      txCount: bytes.length,
       squares: _squares,
       layoutWidth: _layoutWidth,
       usedHeight: _usedHeight,
