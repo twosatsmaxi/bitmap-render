@@ -1,5 +1,32 @@
+# Rust
+/target/
 
-# Dolt database files (added by bd init)
-.dolt/
-*.db
-target/
+# Frontend (Trunk)
+/frontend/dist/
+
+# Node
+node_modules/
+package-lock.json
+
+# Logs
+*.log
+backend.log
+
+# OS
+.DS_Store
+
+# Environment
+.env
+.env.*
+
+# Beads (local state)
+.beads/dolt-monitor.pid.lock
+.beads/dolt-server.port
+
+# Project specific
+test_req
+test_req.rs
+test_parse
+test_parse.rs
+verify_yew.js
+block.json
