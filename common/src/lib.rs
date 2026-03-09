@@ -1,4 +1,30 @@
-use wasm_bindgen::prelude::*;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TxSummary {
+    pub txid: Option<String>,
+    pub vsize: u64,
+    pub fee: Option<u64>,
+    pub feerate: Option<f64>,
+    pub value: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BlockMeta {
+    pub id: String,
+    pub height: u64,
+    pub timestamp: u64,
+    pub size: u64,
+    pub tx_count: usize,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct Square {
+    pub x: i32,
+    pub y: i32,
+    pub r: i32,
+    pub index: usize,
+}
 
 #[derive(Clone, Copy, Debug)]
 struct Slot {
@@ -12,13 +38,13 @@ struct Row {
     slots: Vec<Slot>,
 }
 
-struct MondrianLayout {
-    width: i32,
+pub struct MondrianLayout {
+    pub width: i32,
     rows: Vec<Row>,
 }
 
 impl MondrianLayout {
-    fn new(width: i32) -> Self {
+    pub fn new(width: i32) -> Self {
         MondrianLayout {
             width,
             rows: Vec::new(),
@@ -70,7 +96,6 @@ impl MondrianLayout {
                 
                 let row = &mut self.rows[ri as usize];
                 
-                // Find collisions and update in place
                 let mut i = 0;
                 while i < row.slots.len() {
                     let ts = row.slots[i];
@@ -78,7 +103,6 @@ impl MondrianLayout {
                         has_next_slot = true;
                     }
                     if !((ts.x + ts.r) <= sq.x || ts.x >= (sq.x + sw)) {
-                        // collision
                         max_excess = max_excess.max(0.max((ts.x + ts.r) - (slot.x + slot.r)));
                         
                         let modified_r = slot.x - ts.x;
@@ -113,13 +137,7 @@ impl MondrianLayout {
                 continue;
             }
             
-            // To avoid borrowing issues when adding slots to potentially the same row (though impossible here since ri < slot.y)
-            // But we might add slots to *other* rows.
-            // Actually, we only add slots to `rem_y`, which increases. `rem_y` starts at `ts.y` and goes up to `ts.y + old_w`.
-            // This might add slots to rows >= slot.y.
-            // Let's collect modifications.
             let mut additions = Vec::new();
-            
             let row = &mut self.rows[ri as usize];
             let mut i = 0;
             while i < row.slots.len() {
@@ -164,31 +182,36 @@ impl MondrianLayout {
         sq
     }
 
-    fn place(&mut self, size: i32) -> Slot {
+    pub fn place(&mut self, size: i32) -> (i32, i32, i32) {
+        let mut found_sq = None;
         for row_idx in 0..self.rows.len() {
-            // Find first slot that fits
-            let mut found = None;
+            let mut found_slot = None;
             for slot in &self.rows[row_idx].slots {
                 if slot.r >= size {
-                    found = Some(*slot);
+                    found_slot = Some(*slot);
                     break;
                 }
             }
-            if let Some(slot) = found {
-                return self.fill_slot(slot, size);
+            if let Some(slot) = found_slot {
+                found_sq = Some(self.fill_slot(slot, size));
+                break;
             }
         }
-        
-        let new_row_y = self.rows.len() as i32;
-        self.ensure_rows(new_row_y);
-        let slot = Slot { x: 0, y: new_row_y, r: self.width };
-        self.add_slot(slot);
-        self.fill_slot(slot, size)
+
+        let sq = if let Some(sq) = found_sq {
+            sq
+        } else {
+            let new_row_y = self.rows.len() as i32;
+            self.ensure_rows(new_row_y);
+            let slot = Slot { x: 0, y: new_row_y, r: self.width };
+            self.add_slot(slot);
+            self.fill_slot(slot, size)
+        };
+        (sq.x, sq.y, sq.r)
     }
 }
 
-#[wasm_bindgen]
-pub fn layout_block(sizes: &[u8]) -> Vec<i32> {
+pub fn compute_layout(sizes: &[u8]) -> (i32, i32, Vec<Square>) {
     let mut weight = 0i64;
     for &size in sizes {
         let size = if size == 0 { 1 } else { size as i32 };
@@ -197,22 +220,15 @@ pub fn layout_block(sizes: &[u8]) -> Vec<i32> {
     let width = (weight as f64).sqrt().ceil() as i32;
     
     let mut layout = MondrianLayout::new(width);
-    
-    let mut results = Vec::with_capacity(sizes.len() * 3 + 2);
-    results.push(width);
-    results.push(0); 
-    
+    let mut squares = Vec::with_capacity(sizes.len());
     let mut max_y = 0;
     
-    for &size in sizes {
+    for (i, &size) in sizes.iter().enumerate() {
         let size = if size == 0 { 1 } else { size as i32 };
-        let sq = layout.place(size);
-        results.push(sq.x);
-        results.push(sq.y);
-        results.push(sq.r);
-        max_y = max_y.max(sq.y + sq.r);
+        let (x, y, r) = layout.place(size);
+        squares.push(Square { x, y, r, index: i });
+        max_y = max_y.max(y + r);
     }
     
-    results[1] = max_y;
-    results
+    (width, max_y, squares)
 }

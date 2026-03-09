@@ -13,7 +13,10 @@ use reqwest::Client;
 use serde::Deserialize;
 use tokio::sync::Mutex;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::services::ServeDir;
 use tracing::{error, info};
+
+use common::{BlockMeta, TxSummary};
 
 const DEFAULT_MEMPOOL_BASE_URL: &str = "https://mempool.space/api";
 const DEFAULT_CACHE_CAPACITY: usize = 128;
@@ -56,16 +59,6 @@ struct MempoolTx {
     fee: Option<u64>,
     feerate: Option<f64>,
     vout: Option<Vec<TxOut>>,
-}
-
-// ── Slim tx summary returned by /api/block/:height/txs
-#[derive(Debug, serde::Serialize, Clone)]
-struct TxSummary {
-    txid: Option<String>,
-    vsize: u64,
-    fee: Option<u64>,
-    feerate: Option<f64>,
-    value: u64,
 }
 
 // ── Ord API types
@@ -124,15 +117,6 @@ fn ord_tx_vsize(tx: &OrdTx) -> u64 {
         }
     }
     base + (witness + 3) / 4
-}
-
-#[derive(Debug, serde::Serialize)]
-struct BlockMeta {
-    id: String,
-    height: u64,
-    timestamp: u64,
-    size: u64,
-    tx_count: usize,
 }
 
 #[tokio::main]
@@ -202,6 +186,7 @@ async fn main() {
         .route("/api/block/{height}/meta", get(get_block_meta))
         .route("/api/block/{height}/txs", get(get_block_txs))
         .route("/api/blockheight/{hash}", get(get_blockheight_by_hash))
+        .nest_service("/", ServeDir::new("frontend/dist"))
         .layer(cors)
         .with_state(state);
 
