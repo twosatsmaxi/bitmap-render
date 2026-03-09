@@ -186,7 +186,7 @@ async fn main() {
         .route("/api/block/{height}/meta", get(get_block_meta))
         .route("/api/block/{height}/txs", get(get_block_txs))
         .route("/api/blockheight/{hash}", get(get_blockheight_by_hash))
-        .nest_service("/", ServeDir::new("frontend/dist"))
+        .fallback_service(ServeDir::new("frontend/dist"))
         .layer(cors)
         .with_state(state);
 
