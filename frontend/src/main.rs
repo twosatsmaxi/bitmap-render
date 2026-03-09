@@ -1,6 +1,6 @@
 use yew::prelude::*;
 use common::{compute_layout, BlockMeta, Square};
-use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
+use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, HtmlInputElement};
 use wasm_bindgen::JsCast;
 use gloo_net::http::Request;
 
@@ -23,7 +23,7 @@ fn block_card(props: &BlockCardProps) -> Html {
         let error = error.clone();
         let canvas_ref = canvas_ref.clone();
 
-        use_effect_with((), move |_| {
+        use_effect_with(height, move |_| {
             wasm_bindgen_futures::spawn_local(async move {
                 // Fetch Meta
                 let meta_url = format!("{}/api/block/{}/meta", api_base, height);
@@ -112,16 +112,57 @@ fn render_squares(ctx: &CanvasRenderingContext2d, squares: &[Square], layout_wid
 fn app() -> Html {
     let start_height = use_state(|| 840000u64);
     let api_base = "http://localhost:3000".to_string();
+    let search_input_ref = use_node_ref();
+
+    let on_prev = {
+        let start_height = start_height.clone();
+        Callback::from(move |_| {
+            start_height.set(start_height.saturating_sub(4));
+        })
+    };
+
+    let on_next = {
+        let start_height = start_height.clone();
+        Callback::from(move |_| {
+            start_height.set(*start_height + 4);
+        })
+    };
+
+    let on_search = {
+        let start_height = start_height.clone();
+        let search_input_ref = search_input_ref.clone();
+        Callback::from(move |e: SubmitEvent| {
+            e.prevent_default();
+            if let Some(input) = search_input_ref.cast::<HtmlInputElement>() {
+                if let Ok(h) = input.value().parse::<u64>() {
+                    start_height.set(h);
+                }
+            }
+        })
+    };
 
     html! {
         <main>
             <div id="toolbar">
                 <div id="title">{ "Lite Block Grid (Yew)" }</div>
+                <button class="step-btn" onclick={on_prev}>{ "-4" }</button>
+                <button class="step-btn" onclick={on_next}>{ "+4" }</button>
+                <form id="search-form" onsubmit={on_search}>
+                    <input 
+                        ref={search_input_ref}
+                        id="search-input" 
+                        type="text" 
+                        placeholder="start block height" 
+                        autocomplete="off" 
+                        spellcheck="false" 
+                    />
+                    <button id="search-btn" type="submit">{ "Load" }</button>
+                </form>
             </div>
             <div id="grid">
                 {
                     for (0..4).map(|i| {
-                        html! { <BlockCard height={*start_height + i} api_base={api_base.clone()} /> }
+                        html! { <BlockCard key={*start_height + i} height={*start_height + i} api_base={api_base.clone()} /> }
                     })
                 }
             </div>

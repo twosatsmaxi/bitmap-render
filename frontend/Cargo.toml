@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 yew = { version = "0.21", features = ["csr"] }
 wasm-bindgen = "0.2"
-web-sys = { version = "0.3", features = ["CanvasRenderingContext2d", "Document", "Element", "HtmlCanvasElement", "Window", "Response", "Request", "RequestInit", "Headers"] }
+web-sys = { version = "0.3", features = ["CanvasRenderingContext2d", "Document", "Element", "HtmlCanvasElement", "Window", "Response", "Request", "RequestInit", "Headers", "HtmlInputElement"] }
 common = { path = "../common" }
 serde = { version = "1.0", features = ["derive"] }
 wasm-bindgen-futures = "0.4"
