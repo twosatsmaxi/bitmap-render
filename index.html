@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; connect-src 'self' http://localhost:3000 https://mempool.space; style-src 'self' 'unsafe-inline'; img-src 'self' data:;">
 <title>Bitcoin Block Viewer — Bitfeed Clone</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -318,7 +319,14 @@ class MondrianLayout {
 }
 
 // ── API config (?api_base=http://localhost:3000)
-const API_BASE = new URLSearchParams(location.search).get('api_base') || 'http://localhost:3000';
+function _sanitizeUrl(u) {
+  try {
+    const url = new URL(u);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    return url.origin;
+  } catch(e) { return null; }
+}
+const API_BASE = _sanitizeUrl(new URLSearchParams(location.search).get('api_base')) || 'http://localhost:3000';
 
 // ── State
 const canvas = document.getElementById('canvas');
@@ -507,11 +515,30 @@ canvas.addEventListener('mousemove', e => {
     const fr = found.feerate != null ? found.feerate.toFixed(2) : '—';
     const val = (txValue(found) / 1e8).toFixed(8);
     tooltip.style.cssText = `display:block;left:${e.clientX+14}px;top:${e.clientY-8}px`;
-    tooltip.innerHTML = `
-      <div class="tid">${found.txid ? `${found.txid.slice(0,20)}…${found.txid.slice(-8)}` : 'tx #—'}</div>
-      <div class="row"><span>vsize</span><span>${vs} vbytes</span></div>
-      <div class="row"><span>fee rate</span><span>${fr} sat/vbyte</span></div>
-      <div class="row"><span>value</span><span>₿ ${val}</span></div>`;
+    
+    tooltip.textContent = '';
+    const tidEl = document.createElement('div');
+    tidEl.className = 'tid';
+    tidEl.textContent = found.txid ? `${found.txid.slice(0,20)}…${found.txid.slice(-8)}` : 'tx #—';
+    tooltip.appendChild(tidEl);
+
+    const rows = [
+      ['vsize', `${vs} vbytes`],
+      ['fee rate', `${fr} sat/vbyte`],
+      ['value', `₿ ${val}`]
+    ];
+
+    for (const [label, value] of rows) {
+      const row = document.createElement('div');
+      row.className = 'row';
+      const s1 = document.createElement('span');
+      s1.textContent = label;
+      const s2 = document.createElement('span');
+      s2.textContent = value;
+      row.appendChild(s1);
+      row.appendChild(s2);
+      tooltip.appendChild(row);
+    }
   } else {
     tooltip.style.display = 'none';
   }

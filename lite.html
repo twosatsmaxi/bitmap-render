@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' blob:; connect-src 'self' http://localhost:3000 https://mempool.space; style-src 'self' 'unsafe-inline'; img-src 'self' data:;">
 <title>Bitcoin Block Viewer Lite</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -75,8 +76,21 @@
 
 <script>
 const _liteParams = new URLSearchParams(location.search);
-const API_BASE = _liteParams.get('api_base') || 'http://localhost:3000';
-const MEMPOOL_BASE = _liteParams.get('mempool_base') || 'https://mempool.space';
+const _raw_api_base = _liteParams.get('api_base') || 'http://localhost:3000';
+const _raw_mempool_base = _liteParams.get('mempool_base') || 'https://mempool.space';
+
+// Simple URL validation to prevent XSS/injection via URL parameters
+function _sanitizeUrl(u) {
+  try {
+    const url = new URL(u);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    return url.origin;
+  } catch(e) { return null; }
+}
+
+const API_BASE = _sanitizeUrl(_raw_api_base) || 'http://localhost:3000';
+const MEMPOOL_BASE = _sanitizeUrl(_raw_mempool_base) || 'https://mempool.space';
+
 const GRID_COUNT = 4;
 const tooltip = document.getElementById('tooltip');
 const statusEl = document.getElementById('status');
@@ -191,9 +205,14 @@ function buildCard(height) {
       }
       const txids = state.txidsPromise ? await state.txidsPromise : null;
       const txid = txids ? txids[foundIdx] : null;
-      tooltip.innerHTML = txid
-        ? `<div class="tid">${txid.slice(0, 20)}…${txid.slice(-8)}</div>`
-        : `<div class="tid">tx #${foundIdx}</div>`;
+
+      tooltip.textContent = '';
+      const tidEl = document.createElement('div');
+      tidEl.className = 'tid';
+      tidEl.textContent = txid 
+        ? `${txid.slice(0, 20)}…${txid.slice(-8)}`
+        : `tx #${foundIdx}`;
+      tooltip.appendChild(tidEl);
     } else {
       tooltip.style.display = 'none';
     }

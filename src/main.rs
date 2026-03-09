@@ -170,6 +170,7 @@ async fn main() {
         ))
         .pool_idle_timeout(std::time::Duration::from_secs(30))
         .tcp_keepalive(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(10)) // Add 10s request timeout
         .build()
         .expect("failed to build reqwest client");
 
@@ -280,6 +281,14 @@ async fn get_blockheight_by_hash(
     State(state): State<AppState>,
     Path(hash): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
+    // Validate hash format (64 chars hex)
+    if hash.len() != 64 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(AppError {
+            status: StatusCode::BAD_REQUEST,
+            message: "invalid block hash format".to_string(),
+        });
+    }
+
     #[derive(serde::Serialize)]
     struct HeightResp { height: u64 }
 
@@ -512,7 +521,7 @@ impl AppError {
         );
         Self {
             status: StatusCode::BAD_GATEWAY,
-            message: format!("upstream request failed: {error:#}"),
+            message: "upstream request failed".to_string(), // Do not leak internal error/URL
         }
     }
 
