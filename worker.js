@@ -204,7 +204,7 @@ let _ctx = null;
 let wasmInitPromise = null;
 try {
   importScripts('./wasm/pkg/wasm.js');
-  wasmInitPromise = wasm_bindgen('./wasm/pkg/wasm_bg.wasm')
+  wasmInitPromise = wasm_bindgen({ module_or_path: './wasm/pkg/wasm_bg.wasm' })
     .then(() => true)
     .catch((e) => {
       console.error('[Worker] WASM init failed', e);
