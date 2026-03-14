@@ -32,3 +32,6 @@ test_parse
 test_parse.rs
 verify_yew.js
 block.json
+backend/src/bin/ord_probe.rs
+backend/src/bin/pg_probe.rs
+backend/src/bin/tcp_probe.rs

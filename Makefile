@@ -1,7 +1,7 @@
 .PHONY: backend dev frontend-build frontend-watch tunnel tunnel-db all clean
 
-DATABASE_URL ?= postgres://bitmap:nojbuw-rUrqyc-gygqi7@127.0.0.1:5433/bitmap
-ORD_BASE_URL ?= http://localhost:4001
+DATABASE_URL ?= postgres://bitmap:nojbuw-rUrqyc-gygqi7@192.168.1.105:5432/bitmap
+ORD_BASE_URL ?= http://192.168.1.105:4000
 
 # macOS Local Network Privacy blocks unsigned binaries from reaching LAN IPs.
 # Workaround: SSH tunnel through localhost (Apple-signed, bypasses restriction).

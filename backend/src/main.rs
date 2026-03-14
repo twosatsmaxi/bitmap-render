@@ -90,12 +90,11 @@ async fn main() {
         .max_connections(max_db_connections)
         .min_connections(min_db_connections)
         .acquire_timeout(Duration::from_secs(5))
-        .connect(&database_url)
-        .await
-        .expect("failed to connect to postgres");
+        .connect_lazy(&database_url)
+        .expect("failed to configure postgres pool");
     info!(
         max_db_connections,
-        min_db_connections, "connected to postgres"
+        min_db_connections, "configured postgres pool"
     );
 
     let cache_capacity = std::env::var("CACHE_CAPACITY")

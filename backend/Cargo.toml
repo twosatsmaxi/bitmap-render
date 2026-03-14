@@ -2,13 +2,14 @@
 name = "bitmap-render-backend"
 version = "0.1.0"
 edition = "2024"
+default-run = "bitmap-render-backend"
 
 [dependencies]
 common = { path = "../common" }
 axum = "0.8"
 brotli = "8.0"
 lru = "0.16"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "rustls-tls-native-roots"] }
+reqwest = { version = "0.12", features = ["json"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres"] }
