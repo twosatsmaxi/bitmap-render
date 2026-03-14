@@ -62,10 +62,10 @@ impl MondrianLayout {
         if slot.r <= 0 {
             return;
         }
-        
+
         self.ensure_rows(slot.y);
         let row = &mut self.rows[slot.y as usize];
-        
+
         if let Some(existing) = row.slots.iter_mut().find(|s| s.x == slot.x) {
             if slot.r > existing.r {
                 existing.r = slot.r;
@@ -73,7 +73,11 @@ impl MondrianLayout {
             return;
         }
 
-        let insert_at = row.slots.iter().position(|s| s.x > slot.x).unwrap_or(row.slots.len());
+        let insert_at = row
+            .slots
+            .iter()
+            .position(|s| s.x > slot.x)
+            .unwrap_or(row.slots.len());
         row.slots.insert(insert_at, slot);
     }
 
@@ -86,16 +90,20 @@ impl MondrianLayout {
     }
 
     fn fill_slot(&mut self, slot: Slot, sw: i32) -> Slot {
-        let sq = Slot { x: slot.x, y: slot.y, r: sw };
+        let sq = Slot {
+            x: slot.x,
+            y: slot.y,
+            r: sw,
+        };
         self.remove_slot(slot.x, slot.y);
 
         for ri in slot.y..(slot.y + sw) {
             if (ri as usize) < self.rows.len() {
                 let mut max_excess = 0;
                 let mut has_next_slot = false;
-                
+
                 let row = &mut self.rows[ri as usize];
-                
+
                 let mut i = 0;
                 while i < row.slots.len() {
                     let ts = row.slots[i];
@@ -104,7 +112,7 @@ impl MondrianLayout {
                     }
                     if !((ts.x + ts.r) <= sq.x || ts.x >= (sq.x + sw)) {
                         max_excess = max_excess.max(0.max((ts.x + ts.r) - (slot.x + slot.r)));
-                        
+
                         let modified_r = slot.x - ts.x;
                         if modified_r > 0 {
                             row.slots[i].r = modified_r;
@@ -116,17 +124,29 @@ impl MondrianLayout {
                         i += 1;
                     }
                 }
-                
+
                 if sq.x + sw < self.width && !has_next_slot {
-                    self.add_slot(Slot { x: sq.x + sw, y: ri, r: slot.r - sw + max_excess });
+                    self.add_slot(Slot {
+                        x: sq.x + sw,
+                        y: ri,
+                        r: slot.r - sw + max_excess,
+                    });
                 }
             } else {
                 self.ensure_rows(ri);
                 if slot.x > 0 {
-                    self.add_slot(Slot { x: 0, y: ri, r: slot.x });
+                    self.add_slot(Slot {
+                        x: 0,
+                        y: ri,
+                        r: slot.x,
+                    });
                 }
                 if sq.x + sw < self.width {
-                    self.add_slot(Slot { x: sq.x + sw, y: ri, r: self.width - (sq.x + sw) });
+                    self.add_slot(Slot {
+                        x: sq.x + sw,
+                        y: ri,
+                        r: self.width - (sq.x + sw),
+                    });
                 }
             }
         }
@@ -136,7 +156,7 @@ impl MondrianLayout {
             if (ri as usize) >= self.rows.len() {
                 continue;
             }
-            
+
             let mut additions = Vec::new();
             let row = &mut self.rows[ri as usize];
             let mut i = 0;
@@ -145,26 +165,34 @@ impl MondrianLayout {
                 if ts.x < sq.x + sw && ts.x + ts.r > sq.x && ts.y + ts.r >= slot.y {
                     let old_w = ts.r;
                     let new_r = slot.y - ts.y;
-                    
+
                     if new_r <= 0 {
                         row.slots.remove(i);
                     } else {
                         row.slots[i].r = new_r;
                         i += 1;
                     }
-                    
+
                     let mut rem_x = ts.x + ts.r;
                     let mut rem_y = ts.y;
                     let mut rem_w = old_w - new_r;
                     let mut rem_h = new_r;
-                    
+
                     while rem_w > 0 && rem_h > 0 {
                         if rem_w <= rem_h {
-                            additions.push(Slot { x: rem_x, y: rem_y, r: rem_w });
+                            additions.push(Slot {
+                                x: rem_x,
+                                y: rem_y,
+                                r: rem_w,
+                            });
                             rem_y += rem_w;
                             rem_h -= rem_w;
                         } else {
-                            additions.push(Slot { x: rem_x, y: rem_y, r: rem_h });
+                            additions.push(Slot {
+                                x: rem_x,
+                                y: rem_y,
+                                r: rem_h,
+                            });
                             rem_x += rem_h;
                             rem_w -= rem_h;
                         }
@@ -173,7 +201,7 @@ impl MondrianLayout {
                     i += 1;
                 }
             }
-            
+
             for add in additions {
                 self.add_slot(add);
             }
@@ -203,7 +231,11 @@ impl MondrianLayout {
         } else {
             let new_row_y = self.rows.len() as i32;
             self.ensure_rows(new_row_y);
-            let slot = Slot { x: 0, y: new_row_y, r: self.width };
+            let slot = Slot {
+                x: 0,
+                y: new_row_y,
+                r: self.width,
+            };
             self.add_slot(slot);
             self.fill_slot(slot, size)
         };
@@ -218,17 +250,17 @@ pub fn compute_layout(sizes: &[u8]) -> (i32, i32, Vec<Square>) {
         weight += (size as i64) * (size as i64);
     }
     let width = (weight as f64).sqrt().ceil() as i32;
-    
+
     let mut layout = MondrianLayout::new(width);
     let mut squares = Vec::with_capacity(sizes.len());
     let mut max_y = 0;
-    
+
     for (i, &size) in sizes.iter().enumerate() {
         let size = if size == 0 { 1 } else { size as i32 };
         let (x, y, r) = layout.place(size);
         squares.push(Square { x, y, r, index: i });
         max_y = max_y.max(y + r);
     }
-    
+
     (width, max_y, squares)
 }
