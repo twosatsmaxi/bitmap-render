@@ -31,7 +31,7 @@ struct AppState {
     client: Client,
     db: PgPool,
     ord_base_url: String,
-    cache: Arc<Mutex<LruCache<u64, Arc<[u8]>>>>,
+    cache: Arc<Mutex<LruCache<u64, (String, Arc<[u8]>)>>>,
     tx_cache: Arc<Mutex<LruCache<u64, Arc<Vec<TxSummary>>>>>,
 }
 
@@ -84,7 +84,7 @@ async fn main() {
         .ok()
         .and_then(|value| value.parse::<u32>().ok())
         .map(|value| value.min(max_db_connections))
-        .unwrap_or(8);
+        .unwrap_or(0);
 
     let db = PgPoolOptions::new()
         .max_connections(max_db_connections)
@@ -142,7 +142,8 @@ async fn main() {
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
-        .allow_methods([Method::GET]);
+        .allow_methods([Method::GET])
+        .expose_headers(["x-block-hash".parse::<header::HeaderName>().unwrap()]);
     let app = Router::new()
         .route("/healthz", get(healthz))
         .route("/api/block/{height}", get(get_block))
@@ -171,8 +172,8 @@ async fn get_block(
     State(state): State<AppState>,
     Path(height): Path<u64>,
 ) -> Result<Response<Body>, AppError> {
-    if let Some(payload) = state.cache.lock().await.get(&height).cloned() {
-        return Ok(binary_response(payload));
+    if let Some((hash, payload)) = state.cache.lock().await.get(&height).cloned() {
+        return Ok(binary_response(&hash, payload));
     }
 
     let row: Option<(Vec<u8>,)> = sqlx::query_as(
@@ -191,9 +192,18 @@ async fn get_block(
     };
 
     info!(height, bytes = encoded_bytes.len(), "served from postgres");
+    let hash = fetch_text(
+        &state.client,
+        format!("{}/blockhash/{}", state.ord_base_url, height),
+    )
+    .await?;
     let payload = Arc::<[u8]>::from(encoded_bytes);
-    state.cache.lock().await.put(height, payload.clone());
-    Ok(binary_response(payload))
+    state
+        .cache
+        .lock()
+        .await
+        .put(height, (hash.clone(), payload.clone()));
+    Ok(binary_response(&hash, payload))
 }
 
 async fn get_block_meta(
@@ -321,6 +331,19 @@ async fn fetch_json<T: for<'de> Deserialize<'de>>(
         .map_err(AppError::upstream_transport)
 }
 
+async fn fetch_text(client: &Client, url: String) -> Result<String, AppError> {
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(AppError::upstream_transport)?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(AppError::upstream_status(status.as_u16()));
+    }
+    response.text().await.map_err(AppError::upstream_transport)
+}
+
 fn varint_size(n: usize) -> u64 {
     if n < 0xfd {
         1
@@ -360,7 +383,7 @@ fn ord_tx_vsize(tx: &OrdTx) -> u64 {
     base + witness.div_ceil(4)
 }
 
-fn binary_response(payload: Arc<[u8]>) -> Response<Body> {
+fn binary_response(hash: &str, payload: Arc<[u8]>) -> Response<Body> {
     let compressed = brotli_compress(payload.as_ref()).unwrap_or_else(|err| {
         error!("brotli compression failed: {err}");
         payload.to_vec()
@@ -377,6 +400,7 @@ fn binary_response(payload: Arc<[u8]>) -> Response<Body> {
             HeaderValue::from_static("public, max-age=31536000, immutable"),
         )
         .header(header::CONTENT_ENCODING, HeaderValue::from_static("br"))
+        .header("X-Block-Hash", hash)
         .body(Body::from(compressed))
         .expect("response should build")
 }
