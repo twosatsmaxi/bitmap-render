@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; connect-src 'self' http://localhost:3000; style-src 'self' 'unsafe-inline'; img-src 'self' data:;">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; connect-src 'self' http://localhost:3000 https://mempool.space; style-src 'self' 'unsafe-inline'; img-src 'self' data:;">
 <title>Bitcoin Block Viewer — Bitmap</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -115,6 +115,10 @@
 <div id="tooltip"></div>
 
 <script>
+const _params = new URLSearchParams(location.search);
+const _raw_api_base = _params.get('api_base') || 'http://localhost:3000';
+const _raw_mempool_base = _params.get('mempool_base') || 'https://mempool.space';
+
 function _sanitizeUrl(value) {
   if (!value) return null;
   try {
@@ -125,6 +129,9 @@ function _sanitizeUrl(value) {
     return null;
   }
 }
+
+const API_BASE = _sanitizeUrl(_raw_api_base) || 'http://localhost:3000';
+const MEMPOOL_BASE = _sanitizeUrl(_raw_mempool_base) || 'https://mempool.space';
 
 function buildTxMap(squares, width, usedHeight) {
   const map = [];
@@ -199,13 +206,17 @@ function hideTooltip() {
 }
 
 function parseRoute() {
-  const m = location.pathname.match(/\/block\/(?:height\/)?([0-9a-fA-F]+)/);
+  const m = location.hash.match(/^#\/block\/(?:height\/)?([0-9a-fA-F]+)/);
   return m ? m[1] : null;
 }
 
 function navigate(heightOrHash) {
   const isHash = /^[0-9a-fA-F]{64}$/.test(heightOrHash);
-  history.pushState({}, '', isHash ? `/block/${heightOrHash}` : `/block/height/${heightOrHash}`);
+  const nextHash = isHash ? `#/block/${heightOrHash}` : `#/block/height/${heightOrHash}`;
+  if (location.hash !== nextHash) {
+    suppressNextHashChange = true;
+    location.hash = nextHash;
+  }
 }
 
 function updateTitle(height) {
@@ -221,12 +232,13 @@ async function fetchBlockMeta(height) {
 async function fetchBlockBinary(height) {
   const response = await fetch(`${API_BASE}/api/block/${height}`);
   if (!response.ok) throw new Error('Block not found');
-  return response.arrayBuffer();
+  const hash = response.headers.get('X-Block-Hash');
+  const buffer = await response.arrayBuffer();
+  return { hash, buffer };
 }
 
 async function loadBlock(height) {
   currentHeight = height;
-  currentHash = null;
   navigate(height);
   updateTitle(height);
   document.getElementById('search-input').value = '';
@@ -235,20 +247,23 @@ async function loadBlock(height) {
   canvas.style.display = 'none';
   hideTooltip();
   txMap = null;
+  txidsPromise = null;
   currentSquares = [];
   destroyWorker();
 
   try {
-    const [block, buffer] = await Promise.all([
+    const [block, binary] = await Promise.all([
       fetchBlockMeta(height),
       fetchBlockBinary(height),
     ]);
+    const { hash, buffer } = binary;
 
     blockData = block;
+    currentHash = hash;
     resizeCanvasState();
     setPanel(block, buffer.byteLength, buffer.byteLength);
 
-    worker = new Worker('/worker.js');
+    worker = new Worker(`${window.location.origin}/worker.js`);
     worker.postMessage({ type: 'layout', buffer, canvasSize }, [buffer]);
 
     worker.onmessage = e => {
@@ -286,7 +301,7 @@ async function loadBlockByHash(hash) {
     const { height } = await response.json();
     currentHash = hash;
     await loadBlock(height);
-    history.replaceState({}, '', `/block/${hash}`);
+    location.hash = `#/block/${hash}`;
   } catch (err) {
     loadingEl.textContent = `Error: ${err.message}`;
     throw err;
@@ -314,7 +329,6 @@ async function loadBlockByInput(raw) {
   }
 }
 
-const API_BASE = _sanitizeUrl(new URLSearchParams(location.search).get('api_base')) || 'http://localhost:3000';
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
 const loadingEl = document.getElementById('loading');
@@ -323,8 +337,10 @@ const tooltip = document.getElementById('tooltip');
 let blockData = null;
 let currentHeight = null;
 let currentHash = null;
+let suppressNextHashChange = false;
 let worker = null;
 let txMap = null;
+let txidsPromise = null;
 let currentSquares = [];
 let layoutWidth = 1;
 let usedHeight = 1;
@@ -332,7 +348,7 @@ let canvasSize = 1;
 let gridSize = 1;
 let offsetY = 0;
 
-canvas.addEventListener('mousemove', e => {
+canvas.addEventListener('mousemove', async e => {
   if (!txMap) return;
   const rect = canvas.getBoundingClientRect();
   const mx = (e.clientX - rect.left) * (canvasSize / rect.width);
@@ -350,7 +366,14 @@ canvas.addEventListener('mousemove', e => {
   tooltip.textContent = '';
   const tidEl = document.createElement('div');
   tidEl.className = 'tid';
-  tidEl.textContent = `tx #${txIndex.toLocaleString()}`;
+  if (!txidsPromise && currentHash) {
+    txidsPromise = fetch(`${MEMPOOL_BASE}/api/block/${currentHash}/txids`).then(r => r.json());
+  }
+  const txids = txidsPromise ? await txidsPromise : null;
+  const txid = txids ? txids[txIndex] : null;
+  tidEl.textContent = txid
+    ? `${txid.slice(0, 20)}…${txid.slice(-8)}`
+    : `tx #${txIndex.toLocaleString()}`;
   tooltip.appendChild(tidEl);
 });
 
@@ -361,7 +384,11 @@ document.getElementById('search-form').addEventListener('submit', e => {
   loadBlockByInput(document.getElementById('search-input').value);
 });
 
-window.addEventListener('popstate', () => {
+window.addEventListener('hashchange', () => {
+  if (suppressNextHashChange) {
+    suppressNextHashChange = false;
+    return;
+  }
   const val = parseRoute();
   if (val) loadBlockByInput(val);
 });
