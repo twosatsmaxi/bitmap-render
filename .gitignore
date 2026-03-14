@@ -14,6 +14,7 @@ backend.log
 
 # OS
 .DS_Store
+.idea/
 
 # Environment
 .env
@@ -21,6 +22,7 @@ backend.log
 
 # Beads (local state)
 .beads/dolt-monitor.pid.lock
+.beads/dolt-server.log
 .beads/dolt-server.port
 
 # Project specific

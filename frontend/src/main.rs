@@ -1,8 +1,8 @@
-use yew::prelude::*;
 use common::{compute_layout, BlockMeta, Square};
-use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, HtmlInputElement};
-use wasm_bindgen::JsCast;
 use gloo_net::http::Request;
+use wasm_bindgen::JsCast;
+use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, HtmlInputElement};
+use yew::prelude::*;
 
 #[derive(Properties, PartialEq, Clone)]
 pub struct BlockCardProps {
@@ -28,7 +28,7 @@ fn block_card(props: &BlockCardProps) -> Html {
                 // Fetch Meta
                 let meta_url = format!("{}/api/block/{}/meta", api_base, height);
                 let resp = Request::get(&meta_url).send().await;
-                
+
                 match resp {
                     Ok(r) if r.ok() => {
                         if let Ok(m) = r.json::<BlockMeta>().await {
@@ -46,7 +46,7 @@ fn block_card(props: &BlockCardProps) -> Html {
                     if r.ok() {
                         if let Ok(buffer) = r.binary().await {
                             let (width, used_height, squares) = compute_layout(&buffer);
-                            
+
                             if let Some(canvas) = canvas_ref.cast::<HtmlCanvasElement>() {
                                 let context = canvas
                                     .get_context("2d")
@@ -97,34 +97,66 @@ fn hcl_to_rgb(h_deg: f64, c: f64, l: f64) -> (u8, u8, u8) {
     let fz = fy - b / 200.0;
     let e = 0.008856;
     let k = 903.3;
-    let x = if fx.powi(3) > e { fx.powi(3) } else { (116.0 * fx - 16.0) / k } * 0.95047;
-    let y = if l > k * e { ((l + 16.0) / 116.0).powi(3) } else { l / k };
-    let z = if fz.powi(3) > e { fz.powi(3) } else { (116.0 * fz - 16.0) / k } * 1.08883;
-    let lin = |v: f64| if v <= 0.0031308 { 12.92 * v } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+    let x = if fx.powi(3) > e {
+        fx.powi(3)
+    } else {
+        (116.0 * fx - 16.0) / k
+    } * 0.95047;
+    let y = if l > k * e {
+        ((l + 16.0) / 116.0).powi(3)
+    } else {
+        l / k
+    };
+    let z = if fz.powi(3) > e {
+        fz.powi(3)
+    } else {
+        (116.0 * fz - 16.0) / k
+    } * 1.08883;
+    let lin = |v: f64| {
+        if v <= 0.0031308 {
+            12.92 * v
+        } else {
+            1.055 * v.powf(1.0 / 2.4) - 0.055
+        }
+    };
     (
-        (lin(x * 3.2406 + y * -1.5372 + z * -0.4986) * 255.0).round().clamp(0.0, 255.0) as u8,
-        (lin(x * -0.9689 + y * 1.8758 + z * 0.0415) * 255.0).round().clamp(0.0, 255.0) as u8,
-        (lin(x * 0.0557 + y * -0.2040 + z * 1.0570) * 255.0).round().clamp(0.0, 255.0) as u8,
+        (lin(x * 3.2406 + y * -1.5372 + z * -0.4986) * 255.0)
+            .round()
+            .clamp(0.0, 255.0) as u8,
+        (lin(x * -0.9689 + y * 1.8758 + z * 0.0415) * 255.0)
+            .round()
+            .clamp(0.0, 255.0) as u8,
+        (lin(x * 0.0557 + y * -0.2040 + z * 1.0570) * 255.0)
+            .round()
+            .clamp(0.0, 255.0) as u8,
     )
 }
 
-fn render_squares(ctx: &CanvasRenderingContext2d, squares: &[Square], layout_width: i32, used_h: i32, canvas_size: i32) {
+fn render_squares(
+    ctx: &CanvasRenderingContext2d,
+    squares: &[Square],
+    layout_width: i32,
+    used_h: i32,
+    canvas_size: i32,
+) {
     ctx.set_fill_style(&"#0d1117".into());
     ctx.fill_rect(0.0, 0.0, canvas_size as f64, canvas_size as f64);
-    
+
     let draw = layout_width.max(used_h) as f64;
     let grid_size = canvas_size as f64 / draw;
     let offset_y = (canvas_size as f64 - used_h as f64 * grid_size) / 2.0;
     let unit_padding = grid_size / 4.0;
-    
+
     let (r, g, b) = hcl_to_rgb(0.181 * 360.0, 78.225, 0.472 * 150.0);
     ctx.set_fill_style(&format!("rgb({},{},{})", r, g, b).into());
-    
+
     for sq in squares {
         let px = sq.x as f64 * grid_size + unit_padding;
         let py = sq.y as f64 * grid_size + offset_y + unit_padding;
         let pw = sq.r as f64 * grid_size - unit_padding * 2.0;
-        if pw <= 0.0 { continue; }
+        if pw <= 0.0 {
+            continue;
+        }
         ctx.fill_rect(px, py, pw, pw);
     }
 }
@@ -169,13 +201,13 @@ fn app() -> Html {
                 <button class="step-btn" onclick={on_prev}>{ "-4" }</button>
                 <button class="step-btn" onclick={on_next}>{ "+4" }</button>
                 <form id="search-form" onsubmit={on_search}>
-                    <input 
+                    <input
                         ref={search_input_ref}
-                        id="search-input" 
-                        type="text" 
-                        placeholder="start block height" 
-                        autocomplete="off" 
-                        spellcheck="false" 
+                        id="search-input"
+                        type="text"
+                        placeholder="start block height"
+                        autocomplete="off"
+                        spellcheck="false"
                     />
                     <button id="search-btn" type="submit">{ "Load" }</button>
                 </form>
