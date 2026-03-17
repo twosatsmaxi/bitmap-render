@@ -144,14 +144,31 @@ async fn main() {
         .allow_origin(Any)
         .allow_methods([Method::GET])
         .expose_headers(["x-block-hash".parse::<header::HeaderName>().unwrap()]);
+
+    // TODO(production): Remove PNA header and restrict allow_origin to specific domains
+    // before deploying to production. Currently allows any origin + private network access
+    // for local dev convenience.
+    let pna = axum::middleware::from_fn(
+        |req: axum::extract::Request, next: axum::middleware::Next| async move {
+            let mut res = next.run(req).await;
+            res.headers_mut().insert(
+                "Access-Control-Allow-Private-Network",
+                HeaderValue::from_static("true"),
+            );
+            res
+        },
+    );
+
     let app = Router::new()
         .route("/healthz", get(healthz))
         .route("/api/block/{height}", get(get_block))
+        .route("/api/block/{height}/png", get(get_block_png))
         .route("/api/block/{height}/meta", get(get_block_meta))
         .route("/api/block/{height}/txs", get(get_block_txs))
         .route("/api/blockheight/{hash}", get(get_blockheight_by_hash))
         .fallback_service(ServeDir::new("frontend/dist"))
         .layer(cors)
+        .layer(pna)
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
@@ -456,6 +473,131 @@ impl IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
         (self.status, self.message).into_response()
     }
+}
+
+fn hcl_to_rgb(h_deg: f64, c: f64, l: f64) -> (u8, u8, u8) {
+    let h = h_deg * std::f64::consts::PI / 180.0;
+    let a = h.cos() * c;
+    let b = h.sin() * c;
+    let fy = (l + 16.0) / 116.0;
+    let fx = a / 500.0 + fy;
+    let fz = fy - b / 200.0;
+    let e = 0.008856;
+    let k = 903.3;
+    let x = if fx.powi(3) > e {
+        fx.powi(3)
+    } else {
+        (116.0 * fx - 16.0) / k
+    } * 0.95047;
+    let y = if l > k * e {
+        ((l + 16.0) / 116.0).powi(3)
+    } else {
+        l / k
+    };
+    let z = if fz.powi(3) > e {
+        fz.powi(3)
+    } else {
+        (116.0 * fz - 16.0) / k
+    } * 1.08883;
+    let lin = |v: f64| {
+        if v <= 0.0031308 {
+            12.92 * v
+        } else {
+            1.055 * v.powf(1.0 / 2.4) - 0.055
+        }
+    };
+    (
+        (lin(x * 3.2406 + y * -1.5372 + z * -0.4986) * 255.0)
+            .round()
+            .clamp(0.0, 255.0) as u8,
+        (lin(x * -0.9689 + y * 1.8758 + z * 0.0415) * 255.0)
+            .round()
+            .clamp(0.0, 255.0) as u8,
+        (lin(x * 0.0557 + y * -0.2040 + z * 1.0570) * 255.0)
+            .round()
+            .clamp(0.0, 255.0) as u8,
+    )
+}
+
+async fn get_block_png(
+    State(state): State<AppState>,
+    Path(height): Path<u64>,
+) -> Result<Response<Body>, AppError> {
+    let row: Option<(Vec<u8>,)> = sqlx::query_as(
+        "SELECT encoded_bytes FROM bitmaps WHERE block_height = $1 AND encoded_bytes IS NOT NULL",
+    )
+    .bind(height as i64)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(AppError::db)?;
+
+    let Some((encoded_bytes,)) = row else {
+        return Err(AppError {
+            status: StatusCode::NOT_FOUND,
+            message: format!("block {height} not found or not yet seeded"),
+        });
+    };
+
+    let (width_units, max_y, squares) = common::compute_layout(&encoded_bytes);
+    
+    let img_width = 1200;
+    let img_height = 630;
+    
+    let mut img = image::ImageBuffer::from_pixel(img_width as u32, img_height as u32, image::Rgb([9, 9, 11]));
+    
+    let (r, g, b) = hcl_to_rgb(0.181 * 360.0, 78.225, 0.472 * 150.0);
+    let sq_color = image::Rgb([r, g, b]);
+
+    let padding = 40.0;
+    let available_w = (img_width as f64) - padding * 2.0;
+    let available_h = (img_height as f64) - padding * 2.0;
+    
+    let unit_w = available_w / (width_units as f64);
+    let unit_h = available_h / (max_y as f64);
+    let scale = unit_w.min(unit_h);
+    
+    let layout_w = (width_units as f64) * scale;
+    let layout_h = (max_y as f64) * scale;
+    
+    let offset_x = (img_width as f64 - layout_w) / 2.0;
+    let offset_y = (img_height as f64 - layout_h) / 2.0;
+    
+    let unit_padding = scale * 0.05;
+
+    for sq in squares {
+        let pw = (sq.r as f64 * scale - unit_padding * 2.0).round() as i32;
+        if pw <= 0 {
+            continue;
+        }
+        let pw = pw as u32;
+        
+        let px = (sq.x as f64 * scale + offset_x + unit_padding).round() as u32;
+        let py = (sq.y as f64 * scale + offset_y + unit_padding).round() as u32;
+        
+        for y in py..(py + pw) {
+            for x in px..(px + pw) {
+                if x < img_width as u32 && y < img_height as u32 {
+                    img.put_pixel(x, y, sq_color);
+                }
+            }
+        }
+    }
+    
+    let mut buffer = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut buffer, image::ImageFormat::Png).map_err(|e| {
+        error!("failed to generate png: {e}");
+        AppError {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: "failed to generate image".to_string()
+        }
+    })?;
+    
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "image/png")
+        .header(header::CACHE_CONTROL, "public, max-age=86400, immutable")
+        .body(Body::from(buffer.into_inner()))
+        .expect("response should build"))
 }
 
 #[cfg(test)]
