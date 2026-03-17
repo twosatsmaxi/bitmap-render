@@ -141,10 +141,22 @@ async fn main() {
         ))),
     };
 
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods([Method::GET])
-        .expose_headers(["x-block-hash".parse::<header::HeaderName>().unwrap()]);
+    let allowed_origins = std::env::var("ALLOWED_ORIGINS").unwrap_or_else(|_| "*".to_string());
+    let cors = if allowed_origins == "*" {
+        CorsLayer::new()
+            .allow_origin(Any)
+            .allow_methods([Method::GET])
+            .expose_headers(["x-block-hash".parse::<header::HeaderName>().unwrap()])
+    } else {
+        let origins = allowed_origins
+            .split(',')
+            .filter_map(|s| s.trim().parse::<HeaderValue>().ok())
+            .collect::<Vec<_>>();
+        CorsLayer::new()
+            .allow_origin(origins)
+            .allow_methods([Method::GET])
+            .expose_headers(["x-block-hash".parse::<header::HeaderName>().unwrap()])
+    };
 
     // TODO(production): Remove PNA header and restrict allow_origin to specific domains
     // before deploying to production. Currently allows any origin + private network access
