@@ -20,6 +20,7 @@ use sqlx::{PgPool, pool::PoolConnection, postgres::PgPoolOptions};
 use tokio::sync::Mutex;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
+use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
 use tracing::{error, info};
 
 use common::{BlockMeta, TxSummary};
@@ -159,13 +160,25 @@ async fn main() {
         },
     );
 
+    let governor_conf = Arc::new(
+        GovernorConfigBuilder::default()
+            .per_second(2)
+            .burst_size(10)
+            .finish()
+            .unwrap(),
+    );
+
+    let api_routes = Router::new()
+        .route("/block/{height}", get(get_block))
+        .route("/block/{height}/png", get(get_block_png))
+        .route("/block/{height}/meta", get(get_block_meta))
+        .route("/block/{height}/txs", get(get_block_txs))
+        .route("/blockheight/{hash}", get(get_blockheight_by_hash))
+        .layer(GovernorLayer::new(governor_conf));
+
     let app = Router::new()
         .route("/healthz", get(healthz))
-        .route("/api/block/{height}", get(get_block))
-        .route("/api/block/{height}/png", get(get_block_png))
-        .route("/api/block/{height}/meta", get(get_block_meta))
-        .route("/api/block/{height}/txs", get(get_block_txs))
-        .route("/api/blockheight/{hash}", get(get_blockheight_by_hash))
+        .nest("/api", api_routes)
         .fallback_service(ServeDir::new("frontend/dist"))
         .layer(cors)
         .layer(pna)

@@ -17,6 +17,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tower-http = { version = "0.6", features = ["cors", "fs"] }
 image = "0.25.10"
+tower_governor = "0.8.0"
+governor = "0.10.4"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
