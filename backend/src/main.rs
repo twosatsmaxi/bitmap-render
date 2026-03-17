@@ -184,10 +184,12 @@ async fn main() {
         .layer(pna)
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
+    let bind_addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1".to_string());
+
+    let listener = tokio::net::TcpListener::bind((bind_addr.as_str(), port))
         .await
         .expect("failed to bind listener");
-    info!("listening on 0.0.0.0:{port}");
+    info!("listening on {bind_addr}:{port}");
 
     axum::serve(listener, app)
         .await

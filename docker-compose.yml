@@ -3,37 +3,21 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      platforms:
+        - linux/arm64
+      tags:
+        - ghcr.io/twosatsmaxi/bitmap-render-backend:latest
+    image: ghcr.io/twosatsmaxi/bitmap-render-backend:latest
+    container_name: bitmap-render-backend
     ports:
       - "3000:3000"
     environment:
-      DATABASE_URL: postgres://bitmap:nojbuw-rUrqyc-gygqi7@db:5432/bitmap
+      DATABASE_URL: ${DATABASE_URL}
       ORD_BASE_URL: ${ORD_BASE_URL:-http://host.docker.internal:4001}
       PORT: "3000"
+      BIND_ADDR: "0.0.0.0"
       MAX_DB_CONNECTIONS: "16"
       MIN_DB_CONNECTIONS: "0"
       CACHE_CAPACITY: "128"
       RUST_LOG: bitmap_render_backend=info,tower_http=info
-    depends_on:
-      db:
-        condition: service_healthy
     restart: unless-stopped
-
-  db:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: bitmap
-      POSTGRES_PASSWORD: nojbuw-rUrqyc-gygqi7
-      POSTGRES_DB: bitmap
-    ports:
-      - "5433:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U bitmap -d bitmap"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-
-volumes:
-  pgdata:
