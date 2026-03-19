@@ -172,10 +172,11 @@ async fn main() {
         },
     );
 
+    // Generous rate limiting to handle grid rendering (10/sec, burst 30)
     let governor_conf = Arc::new(
         GovernorConfigBuilder::default()
-            .per_second(2)
-            .burst_size(10)
+            .per_second(10)
+            .burst_size(30)
             .finish()
             .unwrap(),
     );
