@@ -116,7 +116,7 @@
 
 <script>
 const _params = new URLSearchParams(location.search);
-const _raw_api_base = _params.get('api_base') || 'http://localhost:3000';
+const _raw_api_base = _params.get('api_base') || '';
 const _raw_mempool_base = _params.get('mempool_base') || 'https://mempool.space';
 
 function _sanitizeUrl(value) {
@@ -130,7 +130,7 @@ function _sanitizeUrl(value) {
   }
 }
 
-const API_BASE = _sanitizeUrl(_raw_api_base) || 'http://localhost:3000';
+const API_BASE = _raw_api_base ? (_sanitizeUrl(_raw_api_base) || 'http://localhost:3000') : '';
 const MEMPOOL_BASE = _sanitizeUrl(_raw_mempool_base) || 'https://mempool.space';
 
 function buildTxMap(squares, width, usedHeight) {
