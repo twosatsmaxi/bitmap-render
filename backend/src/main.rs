@@ -172,8 +172,7 @@ async fn main() {
         },
     );
 
-    // Strict rate limiting for individual endpoints (2/sec, burst 10)
-    let governor_conf_strict = Arc::new(
+    let governor_conf = Arc::new(
         GovernorConfigBuilder::default()
             .per_second(2)
             .burst_size(10)
@@ -181,23 +180,15 @@ async fn main() {
             .unwrap(),
     );
 
-    // Individual endpoints with strict rate limiting (2/sec, burst 10)
-    let api_routes_ratelimited = Router::new()
+    let api_routes = Router::new()
         .route("/block/{height}", get(get_block))
         .route("/block/{height}/png", get(get_block_png))
         .route("/block/{height}/meta", get(get_block_meta))
         .route("/block/{height}/txs", get(get_block_txs))
         .route("/blockheight/{hash}", get(get_blockheight_by_hash))
-        .layer(GovernorLayer::new(governor_conf_strict));
-
-    // Batch endpoints — no rate limiting here, protected by upstream marketplace backend (10/sec, burst 30)
-    let api_routes_batch = Router::new()
         .route("/blocks/batch", get(get_blocks_batch))
-        .route("/blocks/meta/batch", get(get_blocks_meta_batch));
-
-    let api_routes = Router::new()
-        .merge(api_routes_batch)
-        .merge(api_routes_ratelimited);
+        .route("/blocks/meta/batch", get(get_blocks_meta_batch))
+        .layer(GovernorLayer::new(governor_conf));
 
     let app = Router::new()
         .route("/healthz", get(healthz))
@@ -836,11 +827,10 @@ mod tests {
         assert_eq!(log_tx_size(2_500_000_000), 5);
     }
 
-    /// Test that batch endpoints have generous rate limiting (10/sec, burst 30)
+    /// Test that batch endpoints have rate limiting applied (same as individual)
     #[test]
-    fn batch_endpoints_have_generous_rate_limiting() {
-        // Strict rate limiting for individual endpoints (2/sec, burst 10)
-        let governor_conf_strict = Arc::new(
+    fn batch_endpoints_have_rate_limiting() {
+        let governor_conf = Arc::new(
             GovernorConfigBuilder::default()
                 .per_second(2)
                 .burst_size(10)
@@ -848,30 +838,13 @@ mod tests {
                 .unwrap(),
         );
 
-        // Generous rate limiting for batch endpoints (10/sec, burst 30)
-        let governor_conf_batch = Arc::new(
-            GovernorConfigBuilder::default()
-                .per_second(10)
-                .burst_size(30)
-                .finish()
-                .unwrap(),
-        );
-
-        // Individual endpoints with strict rate limiting
-        let api_routes_ratelimited = Router::new()
-            .route("/block/{height}", get(get_block))
-            .route("/block/{height}/meta", get(get_block_meta))
-            .layer(GovernorLayer::new(governor_conf_strict));
-
-        // Batch endpoints with generous rate limiting
-        let api_routes_batch = Router::new()
+        // All endpoints share the same rate limiting
+        let api_routes = Router::new()
+            .route("/blocks/batch", get(get_blocks_batch))
             .route("/blocks/meta/batch", get(get_blocks_meta_batch))
-            .layer(GovernorLayer::new(governor_conf_batch));
+            .layer(GovernorLayer::new(governor_conf));
 
-        // Verify both routers compile with their respective GovernorLayers
-        let _app: Router<AppState> = Router::new()
-            .nest("/api", api_routes_batch)
-            .nest("/api", api_routes_ratelimited);
+        let _: Router<AppState> = Router::new().nest("/api", api_routes);
     }
 
     /// Test that rate limiting configuration is correctly applied to individual endpoints
@@ -895,11 +868,10 @@ mod tests {
         let _: Router<AppState> = Router::new().nest("/api", api_routes);
     }
 
-    /// Test that router has both strict and generous rate limiting tiers
+    /// Test that router has unified rate limiting for all endpoints
     #[test]
-    fn router_structure_with_tiered_rate_limiting() {
-        // Strict rate limiting for individual endpoints (2/sec, burst 10)
-        let governor_conf_strict = Arc::new(
+    fn router_structure_with_unified_rate_limiting() {
+        let governor_conf = Arc::new(
             GovernorConfigBuilder::default()
                 .per_second(2)
                 .burst_size(10)
@@ -907,35 +879,21 @@ mod tests {
                 .unwrap(),
         );
 
-        // Generous rate limiting for batch endpoints (10/sec, burst 30)
-        let governor_conf_batch = Arc::new(
-            GovernorConfigBuilder::default()
-                .per_second(10)
-                .burst_size(30)
-                .finish()
-                .unwrap(),
-        );
-
-        // Individual endpoints with strict rate limiting
-        let api_routes_ratelimited = Router::new()
+        // All endpoints share the same rate limiting (2/sec, burst 10)
+        let api_routes = Router::new()
             .route("/block/{height}", get(get_block))
             .route("/block/{height}/png", get(get_block_png))
             .route("/block/{height}/meta", get(get_block_meta))
             .route("/block/{height}/txs", get(get_block_txs))
             .route("/blockheight/{hash}", get(get_blockheight_by_hash))
-            .layer(GovernorLayer::new(governor_conf_strict));
-
-        // Batch endpoints with generous rate limiting
-        let api_routes_batch = Router::new()
             .route("/blocks/batch", get(get_blocks_batch))
             .route("/blocks/meta/batch", get(get_blocks_meta_batch))
-            .layer(GovernorLayer::new(governor_conf_batch));
+            .layer(GovernorLayer::new(governor_conf));
 
         // Build the complete router matching production structure
         let app: Router<AppState> = Router::new()
             .route("/healthz", get(healthz))
-            .nest("/api", api_routes_batch)
-            .nest("/api", api_routes_ratelimited);
+            .nest("/api", api_routes);
 
         // Verify the router was created successfully with tiered rate limiting
         drop(app);
