@@ -9,7 +9,7 @@ use axum::{
     Router,
     body::Body,
     extract::{Path, Query, State},
-    http::{HeaderValue, Method, Response, StatusCode, header},
+    http::{HeaderMap, HeaderValue, Method, Response, StatusCode, header},
     response::IntoResponse,
     routing::get,
 };
@@ -181,15 +181,6 @@ async fn main() {
             .unwrap(),
     );
 
-    // Generous rate limiting for batch endpoints (10/sec, burst 30) - matches upstream
-    let governor_conf_batch = Arc::new(
-        GovernorConfigBuilder::default()
-            .per_second(10)
-            .burst_size(30)
-            .finish()
-            .unwrap(),
-    );
-
     // Individual endpoints with strict rate limiting (2/sec, burst 10)
     let api_routes_ratelimited = Router::new()
         .route("/block/{height}", get(get_block))
@@ -199,11 +190,10 @@ async fn main() {
         .route("/blockheight/{hash}", get(get_blockheight_by_hash))
         .layer(GovernorLayer::new(governor_conf_strict));
 
-    // Batch endpoints with generous rate limiting (10/sec, burst 30)
+    // Batch endpoints — no rate limiting here, protected by upstream marketplace backend (10/sec, burst 30)
     let api_routes_batch = Router::new()
         .route("/blocks/batch", get(get_blocks_batch))
-        .route("/blocks/meta/batch", get(get_blocks_meta_batch))
-        .layer(GovernorLayer::new(governor_conf_batch));
+        .route("/blocks/meta/batch", get(get_blocks_meta_batch));
 
     let api_routes = Router::new()
         .merge(api_routes_batch)
@@ -224,7 +214,7 @@ async fn main() {
         .expect("failed to bind listener");
     info!("listening on {bind_addr}:{port}");
 
-    axum::serve(listener, app)
+    axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
         .await
         .expect("server exited with error");
 }
@@ -346,6 +336,7 @@ async fn get_blocks_meta_batch(
 async fn get_blocks_batch(
     State(state): State<AppState>,
     Query(query): Query<HeightsQuery>,
+    headers: HeaderMap,
 ) -> Result<Response<Body>, AppError> {
     let heights = query.parse_heights()?;
 
@@ -382,24 +373,29 @@ async fn get_blocks_batch(
         output.extend_from_slice(&data);
     }
 
-    let compressed = brotli_compress(&output).unwrap_or_else(|err| {
-        error!("brotli compression failed: {err}");
-        output
-    });
+    let accepts_br = headers
+        .get(header::ACCEPT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.contains("br"))
+        .unwrap_or(false);
 
-    Ok(Response::builder()
+    let mut builder = Response::builder()
         .status(StatusCode::OK)
-        .header(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static("application/octet-stream"),
-        )
-        .header(
-            header::CACHE_CONTROL,
-            HeaderValue::from_static("public, max-age=31536000, immutable"),
-        )
-        .header(header::CONTENT_ENCODING, HeaderValue::from_static("br"))
-        .body(Body::from(compressed))
-        .expect("response should build"))
+        .header(header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"))
+        .header(header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=31536000, immutable"));
+
+    let body: Vec<u8> = if accepts_br {
+        let compressed = brotli_compress(&output).unwrap_or_else(|err| {
+            error!("brotli compression failed: {err}");
+            output.clone()
+        });
+        builder = builder.header(header::CONTENT_ENCODING, HeaderValue::from_static("br"));
+        compressed
+    } else {
+        output
+    };
+
+    Ok(builder.body(Body::from(body)).expect("response should build"))
 }
 
 async fn get_block_meta(
