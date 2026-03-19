@@ -172,11 +172,11 @@ async fn main() {
         },
     );
 
-    // Very generous rate limiting (100/sec, burst 300) - 10x from previous
+    // Rate limiting: 10k/sec with 30k burst
     let governor_conf = Arc::new(
         GovernorConfigBuilder::default()
-            .per_second(100)
-            .burst_size(300)
+            .per_second(10000)
+            .burst_size(30000)
             .finish()
             .unwrap(),
     );
