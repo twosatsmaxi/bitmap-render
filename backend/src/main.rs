@@ -20,7 +20,7 @@ use sqlx::{PgPool, pool::PoolConnection, postgres::PgPoolOptions};
 use tokio::sync::Mutex;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
-use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
+use tower_governor::{governor::GovernorConfigBuilder, key_extractor::SmartIpKeyExtractor, GovernorLayer};
 use tracing::{error, info};
 
 use common::{BlockMeta, TxSummary};
@@ -172,11 +172,12 @@ async fn main() {
         },
     );
 
-    // Rate limiting: 10k/sec with 30k burst
+    // Rate limiting: 1000/sec per real client IP (via X-Forwarded-For), burst 5000
     let governor_conf = Arc::new(
         GovernorConfigBuilder::default()
-            .per_second(10000)
-            .burst_size(30000)
+            .per_second(1000)
+            .burst_size(5000)
+            .key_extractor(SmartIpKeyExtractor)
             .finish()
             .unwrap(),
     );
